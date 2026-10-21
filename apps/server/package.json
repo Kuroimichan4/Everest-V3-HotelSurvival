@@ -1,0 +1,20 @@
+{
+  "name": "@everest/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prisma:validate": "prisma validate"
+  },
+  "dependencies": {
+    "@everest/shared": "*",
+    "@prisma/client": "7.10.1",
+    "fastify": "5.12.7",
+    "socket.io": "4.8.4"
+  },
+  "devDependencies": { "prisma": "7.10.1", "tsx": "4.23.15" }
+}

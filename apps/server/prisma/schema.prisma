@@ -1,0 +1,10 @@
+// Solo preparacion tecnica. No hay modelos, tablas ni migraciones.
+// PENDIENTE: aprobar el esquema definitivo antes de anadir entidades del juego.
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}

@@ -1,0 +1,32 @@
+{
+  "name": "everest-v3-hotel-survival",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/shared", "apps/server", "apps/web"],
+  "engines": { "node": ">=24.11.0 <25", "npm": ">=11 <12" },
+  "packageManager": "npm@11.19.1",
+  "allowScripts": {
+    "prisma@7.10.1": true,
+    "@prisma/engines@7.10.1": true,
+    "esbuild@0.28.2": true
+  },
+  "scripts": {
+    "dev:web": "npm run build --workspace=@everest/shared && npm run dev --workspace=@everest/web",
+    "dev:server": "npm run build --workspace=@everest/shared && npm run dev --workspace=@everest/server",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run build --workspace=@everest/shared && npm run typecheck --workspaces",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "node scripts/smoke.mjs",
+    "prisma:validate": "npm run prisma:validate --workspace=@everest/server",
+    "start:server": "npm run start --workspace=@everest/server",
+    "preview:web": "npm run preview --workspace=@everest/web"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "socket.io-client": "4.8.4",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}
