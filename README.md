@@ -4,7 +4,9 @@ Simulación web multijugador de liderazgo y gestión de crisis en un hotel parci
 
 ## Estado actual
 
-Esta fase prepara únicamente la base técnica: frontend, backend, contratos compartidos, pruebas y configuración inicial de Prisma. La pantalla inicial comprueba la conexión HTTP y Socket.IO. Todavía no hay salas, personajes, reglas, rondas, votaciones, persistencia de partidas ni proveedor de IA.
+La base técnica incluye frontend, backend, contratos compartidos, pruebas y configuración inicial de Prisma. Ya existe un motor básico de salud, energía y packs, además de salas de cuatro participantes con espera, inicio manual por el creador, asignación aleatoria de roles y reconexión. La pantalla mantiene las comprobaciones HTTP y Socket.IO. Las salas viven provisionalmente en memoria y se pierden al reiniciar el servidor. Todavía no hay rondas, votaciones, persistencia de partidas ni proveedor de IA.
+
+Consulta [el motor básico](apps/server/src/simulation/README.md) y [las salas multijugador](apps/server/src/rooms/README.md), con instrucciones para probar cuatro sesiones independientes.
 
 Los documentos originales de `docs/` se conservan íntegros. Las decisiones posteriores confirmadas por la autora prevalecen sobre las propuestas anteriores. Las últimas correcciones incluyen objetivos por rol ya definidos, accidentes sobre dos humanos vivos distintos (un único vivo sigue pendiente), tratamiento de NPC mediante la votación de rescate y revocación de información privada al fallecer. No se implementan esas mecánicas en esta fase; puntuación y casos pendientes requieren revisión.
 
@@ -87,7 +89,7 @@ npm.cmd run prisma:validate
 ```
 
 - `typecheck`: comprueba TypeScript estricto en todos los paquetes.
-- `test`: ejecuta Vitest; comprueba el endpoint HTTP y una conexión real de Socket.IO en un puerto temporal.
+- `test`: ejecuta Vitest; comprueba el motor, las salas, el endpoint HTTP y conexiones reales Socket.IO en puertos temporales.
 - `build`: compila primero los contratos, después el backend y finalmente el frontend.
 - `prisma:validate`: valida la configuración y el esquema vacío; no conecta con PostgreSQL ni aplica migraciones.
 - `test:watch`: mantiene Vitest escuchando cambios.
@@ -142,4 +144,4 @@ No ejecutes migraciones ni sincronizaciones de esquema como parte de estas instr
 
 ## Siguiente fase
 
-Revisar esta base y aprobar un alcance concreto antes de implementar mecánicas. Siguen pendientes varios casos de energía, votación, fallecimiento, desconexiones, evaluación y puntuación. La función del agente de IA también necesita aprobación específica.
+Revisar las salas y aprobar un alcance concreto antes de continuar. Siguen pendientes liberación de plazas, transferencia del creador, persistencia, varias reglas de rondas, votación, fallecimiento, evaluación y puntuación. La función del agente de IA también necesita aprobación específica.

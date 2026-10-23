@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Lobby } from "./Lobby";
 import { io, type Socket } from "socket.io-client";
 import type { ClientToServerEvents, HealthResponse, ServerToClientEvents } from "@everest/shared";
 
@@ -55,7 +56,7 @@ export function App() {
           <div><dt>Tiempo real</dt><dd>{socketStatus}</dd></div>
         </dl>
       </section>
-      <p className="notice">La simulación todavía no está disponible.</p>
+      <Lobby />
     </main>
   );
 }
