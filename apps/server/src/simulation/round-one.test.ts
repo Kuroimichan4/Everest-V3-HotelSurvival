@@ -26,7 +26,7 @@ test.each(["RESCUE_APPROVED", "ABANDON_APPROVED", "NO_AGREEMENT"] as const)("%s 
   const state = { ...initial, characters: initial.characters.map((character, index) => ({ ...character, energy: index === 3 ? 14 : 100 })) };
   const snapshot = structuredClone(state);
   const resolved = resolveRoundOne(state, "decision", outcome);
-  expect(resolved).toEqual({ ok: false, error: "insufficient-energy", state });
+  expect(resolved).toEqual({ ok: false, error: outcome === "RESCUE_APPROVED" ? "insufficient-energy" : "transport-vote-pending", state });
   expect(resolved.state).toBe(state);
   expect(state).toEqual(snapshot);
 });

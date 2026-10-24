@@ -6,6 +6,8 @@ export interface HumanCharacter {
   readonly role: HumanRole;
   readonly health: number;
   readonly energy: number;
+  /** Preparado para 8B; esta fase no ejecuta abandonos ni eliminaciones. */
+  readonly eliminated?: boolean;
 }
 
 export interface SharedInventory {
@@ -14,7 +16,15 @@ export interface SharedInventory {
 }
 
 export interface SimulationState {
-  readonly currentRound: 1 | 2;
+  readonly transportMovements?: readonly import("./transport-movement.js").TransportMovementRecord[];
+  readonly tools: { readonly crowbar: "available" | "lost" };
+  readonly roundThreeRoute?: import("./round-three-routes.js").RoundThreeRouteResolution;
+  readonly medicalTreatments?: readonly {
+    readonly round: 1 | 2 | 3;
+    readonly characterId: string;
+    readonly healthRestored: number;
+  }[];
+  readonly currentRound: 1 | 2 | 3;
   readonly roundTwo?: {
     readonly movement?: import("./round-two-movement.js").MovementResolution;
     readonly npcId: "round-two-survivor";
@@ -39,12 +49,13 @@ export function createInitialState(): SimulationState {
   const roles: readonly HumanRole[] = ["maintenance", "medic", "architect-engineer", "bellhop"];
   return {
     currentRound: 1, roundOne: null,
+    tools: { crowbar: "available" },
     characters: roles.map((role) => ({ id: role, role, health: 100, energy: 100 })),
     inventory: { packs: 8, medicalUnits: 4 },
   };
 }
 
-/** La muerte se deriva de salud para evitar dos campos que puedan contradecirse. */
+/** La muerte se deriva de salud; una eliminación definitiva también excluye del juego. */
 export function isAlive(character: HumanCharacter): boolean {
-  return character.health > 0;
+  return character.health > 0 && character.eliminated !== true;
 }

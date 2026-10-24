@@ -16,7 +16,7 @@ export const systemClock: VotingClock = {
 export class RoomVoting {
   private decision: Decision;
   private cancel: (() => void) | undefined;
-  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void, private readonly round: 1 | 2 = 1, options: readonly VoteOption[] = [{ id: "rescue", label: "RESCATAR" }, { id: "abandon", label: "ABANDONAR" }]) {
+  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void, private readonly round: 1 | 2 | 3 = 1, options: readonly VoteOption[] = [{ id: "rescue", label: "RESCATAR" }, { id: "abandon", label: "ABANDONAR" }]) {
     const created = createDecision({ id: newId(), attemptId: newId(), now: clock.now(), electorate,
       options });
     if (!created.ok) throw new Error(created.error);

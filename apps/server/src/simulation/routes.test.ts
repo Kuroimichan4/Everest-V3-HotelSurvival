@@ -46,7 +46,7 @@ test.each(cases)("%s rechaza sin costes parciales ni tiradas si el último no pu
   const initial = createInitialState();
   const state = { ...initial, characters: initial.characters.map((character, i) => ({ ...character, energy: i === 3 ? cost - 1 : 100 })) };
   const random = vi.fn(() => 0);
-  expect(traverseRoute(state, route, random)).toEqual({ ok: false, state, error: "insufficient-energy" });
+  expect(traverseRoute(state, route, random)).toEqual({ ok: false, state, error: "transport-vote-pending" });
   expect(random).not.toHaveBeenCalled();
   expect(state.characters[0]!.energy).toBe(100);
 });
@@ -74,13 +74,19 @@ test("con tres vivos se eligen dos vivos distintos incluso usando el extremo sup
   if (result.ok) expect(result.victimIds).toEqual([state.characters[3]!.id, state.characters[2]!.id]);
 });
 
-test.each([[[], "no-living-characters"], [[0], "single-survivor-pending"]] as const)("supervivientes %j: %s", (indices, error) => {
+test.each([[[], "no-living-characters"], [[0], "single-survivor-allowed"]] as const)("supervivientes %j: %s", (indices, error) => {
   const state = survivors([...indices]);
   const random = vi.fn(() => 0.99);
   const result = traverseRoute(state, "ventilation", random);
-  expect(result).toEqual({ ok: false, state, error });
-  expect(result.state).toBe(state);
-  expect(random).not.toHaveBeenCalled();
+  if (indices.length === 1) {
+    expect(result.ok).toBe(true);
+    expect(result.state.characters[0]).toMatchObject({ health: 100, energy: 80 });
+    expect(random).toHaveBeenCalledTimes(1);
+  } else {
+    expect(result).toEqual({ ok: false, state, error });
+    expect(result.state).toBe(state);
+    expect(random).not.toHaveBeenCalled();
+  }
 });
 
 test.each([0, 2])("ruta C identifica especialista fallecido %i como pendiente", (dead) => {
@@ -115,8 +121,10 @@ test("muerte por accidente queda pendiente sin aplicar costes ni daños", () => 
   const initial = createInitialState();
   const state = { ...initial, characters: initial.characters.map((character) => ({ ...character, health: 20 })) };
   const result = traverseRoute(state, "unstable-corridor", () => 0);
-  expect(result).toEqual({ ok: false, state, error: "fatal-accident-order-pending" });
-  expect(result.state).toBe(state);
+  expect(result.ok).toBe(true);
+  expect(result.state.characters.map(c => c.health)).toEqual([0, 0, 20, 20]);
+  expect(result.state.characters.every(c => c.energy === 90)).toBe(true);
+  expect(state.characters.every(c => c.health === 20 && c.energy === 100)).toBe(true);
 });
 
 test("la misma secuencia produce el mismo resultado con identificadores independientes del rol", () => {

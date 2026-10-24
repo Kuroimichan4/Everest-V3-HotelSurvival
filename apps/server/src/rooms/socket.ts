@@ -6,8 +6,13 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
   const channel = (code: string) => `room:${code}`;
   const publish = (room: PublicRoom) => { io.to(channel(room.code)).emit("room:updated", room); };
   manager.onSuppliesChanged = (code) => {
+    for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
+      if (!manager.privateRole(member)) io.sockets.sockets.get(member)?.emit("game:role-unavailable");
+    }
     const supplies = manager.suppliesView(code);
     if (supplies) io.to(channel(code)).emit("supplies:updated", supplies);
+    const medical = manager.medicalView(code);
+    if (medical) io.to(channel(code)).emit("medical:updated", medical);
   };
   manager.onVotingChanged = (code) => {
     manager.onSuppliesChanged(code);
@@ -15,6 +20,8 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
     if (vote) io.to(channel(code)).emit("vote:updated", vote);
     const roundTwo = manager.roundTwoView(code);
     if (roundTwo) io.to(channel(code)).emit("round-two:updated", roundTwo);
+    const roundThree = manager.roundThreeView(code);
+    if (roundThree) io.to(channel(code)).emit("round-three:updated", roundThree);
     const summary = manager.roundSummary(code);
     if (summary) io.to(channel(code)).emit("round:completed", summary);
   };
@@ -22,8 +29,12 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
     const state = manager.votingSession(socketId);
     const supplies = manager.suppliesSession(socketId);
     if (supplies) io.sockets.sockets.get(socketId)?.emit("supplies:updated", supplies);
+    const medical = manager.medicalSession(socketId);
+    if (medical) io.sockets.sockets.get(socketId)?.emit("medical:updated", medical);
     const roundTwo = manager.roundTwoSession(socketId);
     if (roundTwo) io.sockets.sockets.get(socketId)?.emit("round-two:updated", roundTwo);
+    const roundThree = manager.roundThreeSession(socketId);
+    if (roundThree) io.sockets.sockets.get(socketId)?.emit("round-three:updated", roundThree);
     const summary = manager.summarySession(socketId);
     if (summary) io.sockets.sockets.get(socketId)?.emit("round:completed", summary);
     if (state) {
@@ -33,6 +44,11 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
   };
 
   io.on("connection", (socket) => {
+    socket.on("round-three:advance", (ack) => { if (typeof ack === "function") ack(manager.roundThreeAction(socket.id, "advance")); });
+    socket.on("round-three:open", (ack) => { if (typeof ack === "function") ack(manager.roundThreeAction(socket.id, "open")); });
+    socket.on("medical:treat", (input, ack) => {
+      if (typeof ack === "function") ack(manager.treat(socket.id, input));
+    });
     socket.on("pack:give", (input, ack) => {
       if (typeof ack === "function") ack(manager.givePack(socket.id, input));
     });

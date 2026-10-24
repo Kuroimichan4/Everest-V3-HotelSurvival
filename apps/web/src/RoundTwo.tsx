@@ -46,8 +46,8 @@ export function RoundTwo({ state, vote, own, enabled, busy, onVote, maintenance,
     </section>}
     {state.movement?.status === "blocked" && <p role="alert">
       Desplazamiento bloqueado. No se han aplicado costes ni daños de esta resolución y la ronda sigue pendiente.
-      {state.movement.reason === "insufficient-energy" ? " Falta energía para completar la ruta."
-        : state.movement.reason === "single-survivor-pending" ? " Falta definir el desplazamiento con un único superviviente."
+      {state.movement.reason === "transport-vote-pending" ? " Hay compañeros que necesitan transporte. Pendiente la votación de la fase 8B, sin eliminar a nadie automáticamente."
+        : state.movement.reason === "insufficient-energy" ? " Falta energía para completar la ruta."
         : state.movement.reason === "no-living-characters" ? " No quedan humanos vivos; el desenlace está pendiente de definición."
         : state.movement.reason === "specialist-availability-pending" ? " Falta definir la disponibilidad sin los especialistas necesarios."
         : " Hay un caso pendiente de definición o validación. Se necesita revisión antes de continuar."}

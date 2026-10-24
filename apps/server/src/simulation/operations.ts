@@ -7,7 +7,14 @@ export type OperationError =
   | "character-dead"
   | "insufficient-energy"
   | "no-packs"
-  | "energy-full";
+  | "energy-full"
+  | "no-medical-units"
+  | "treatment-used"
+  | "health-full-pending"
+  | "transport-vote-pending"
+  | "invalid-transport-plan"
+  | "transport-plan-infeasible"
+  | "no-living-characters";
 
 export type OperationResult =
   | { readonly ok: true; readonly state: SimulationState }
@@ -61,4 +68,21 @@ export function consumePack(state: SimulationState, characterId: string): Operat
     ok: true,
     state: { ...updated, inventory: { ...state.inventory, packs: state.inventory.packs - 1 } },
   };
+}
+
+/** Un humano vivo por unidad; el límite se conserva por destinatario y ronda. */
+export function administerTreatment(state: SimulationState, characterId: string): OperationResult {
+  const character = state.characters.find(candidate => candidate.id === characterId);
+  if (!character) return reject(state, "character-not-found");
+  if (!isAlive(character)) return reject(state, "character-dead");
+  const history = state.medicalTreatments ?? [];
+  if (history.some(treatment => treatment.round === state.currentRound && treatment.characterId === characterId)) return reject(state, "treatment-used");
+  // Regla pendiente: rechazo seguro, sin gastar ni registrar un tratamiento.
+  if (character.health >= 100) return reject(state, "health-full-pending");
+  if (state.inventory.medicalUnits <= 0) return reject(state, "no-medical-units");
+  const health = Math.min(100, character.health + 20);
+  const updated = replaceCharacter(state, { ...character, health });
+  return { ok: true, state: { ...updated,
+    inventory: { ...state.inventory, medicalUnits: state.inventory.medicalUnits - 1 },
+    medicalTreatments: [...history, { round: state.currentRound, characterId, healthRestored: health - character.health }] } };
 }

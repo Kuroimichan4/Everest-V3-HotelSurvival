@@ -545,3 +545,472 @@ test("6A: concurrent requests cannot spend the same last pack", async () => {
     expect(states[0]!.characters.every(c => c.energy === 100)).toBe(true);
   });
 });
+
+
+function nextMedical(client: Client, predicate: (state: import("@everest/shared").MedicalView) => boolean) {
+  return new Promise<import("@everest/shared").MedicalView>((resolve, reject) => {
+    const timer = setTimeout(() => { client.off("medical:updated", listener); reject(new Error("Missing medical update")); }, 2000);
+    function listener(state: import("@everest/shared").MedicalView) {
+      if (predicate(state)) { clearTimeout(timer); client.off("medical:updated", listener); resolve(state); }
+    }
+    client.on("medical:updated", listener);
+  });
+}
+
+test.each(["before", "after"])("6B: direct medical treatment %s displacement, four sockets and F5", async timing => {
+  await fixture(async ({ room, manager, connect, clock, routeRandom }) => {
+    routeRandom.mockReturnValue(0);
+    const first = await room();
+    const other = await room();
+    const code = first.sessions[0]!.room.code;
+    // Real injuries from the already approved first-round consequences.
+    clock.advance(60_000); clock.advance(30_000);
+    const firstHistory = manager.roundSummary(code)!;
+    await first.clients[0]!.timeout(2000).emitWithAck("round:advance");
+    async function finishMovement() {
+      const rescue = manager.publicVote(code)!;
+      for (const client of first.clients.slice(0, 3)) await cast(client, rescue);
+      await first.clients[0]!.timeout(2000).emitWithAck("route:open");
+      const vote = manager.publicVote(code)!;
+      for (const client of first.clients.slice(0, 3)) await cast(client, vote, "unstable-corridor");
+    }
+    if (timing === "after") await finishMovement();
+    const medicIndex = first.clients.findIndex(client => manager.privateRole(client.id!)?.role === "medic");
+    const medic = first.clients[medicIndex]!;
+    const before = manager.medicalView(code)!;
+    const voteBefore = manager.publicVote(code)!;
+    const historyBefore = manager.roundTwoView(code)!;
+    const timers = clock.tasks.size;
+    const rolls = routeRandom.mock.calls.length;
+    const request = { requestId: crypto.randomUUID(), gameId: before.gameId, round: before.round, targetParticipantId: first.sessions[medicIndex]!.credential.participantId };
+    for (const client of first.clients.filter(c => c !== medic)) expect(await client.timeout(2000).emitWithAck("medical:treat", request)).toEqual({ ok: false, error: "not-authorized" });
+    const otherBefore = manager.medicalView(other.sessions[0]!.room.code)!;
+    const otherUpdates: unknown[] = [];
+    other.clients[0]!.on("medical:updated", state => otherUpdates.push(state));
+    const updates = first.clients.map(client => nextMedical(client, state => state.inventory.medicalUnits === 3));
+    const supplies = first.clients.map(client => nextSupplies(client, state => state.inventory.medicalUnits === 3));
+    const replies = await Promise.all([medic.timeout(2000).emitWithAck("medical:treat", request), medic.timeout(2000).emitWithAck("medical:treat", request)]);
+    expect(replies.every(reply => reply.ok)).toBe(true);
+    const states = await Promise.all(updates);
+    expect(new Set(states.map(state => JSON.stringify(state))).size).toBe(1);
+    const final = states[0]!;
+    expect(final.characters).toEqual(before.characters.map((c, i) => i === medicIndex ? { ...c, health: Math.min(100, c.health + 20) } : c));
+    expect(final.inventory).toEqual({ ...before.inventory, medicalUnits: 3 });
+    expect(final.treatments).toEqual([{ round: 2, participantId: request.targetParticipantId, healthRestored: final.characters[medicIndex]!.health - before.characters[medicIndex]!.health }]);
+    expect((await Promise.all(supplies)).every(state => JSON.stringify(state.characters) === JSON.stringify(final.characters))).toBe(true);
+    expect(clock.tasks.size).toBe(timers);
+    expect(routeRandom).toHaveBeenCalledTimes(rolls);
+    expect(manager.publicVote(code)).toEqual(voteBefore);
+    expect(manager.roundSummary(code)).toEqual(firstHistory);
+    if (timing === "after") expect(manager.roundTwoView(code)).toEqual(historyBefore);
+    expect(await medic.timeout(2000).emitWithAck("medical:treat", { ...request, requestId: crypto.randomUUID() })).toEqual({ ok: false, error: "treatment-used" });
+    const disconnected = new Promise<void>(resolve => first.clients[(medicIndex + 1) % 4]!.once("room:updated", () => resolve()));
+    medic.disconnect(); await disconnected;
+    const replacement = await connect(); first.clients[medicIndex] = replacement;
+    const restored = nextMedical(replacement, state => state.inventory.medicalUnits === 3);
+    expect((await replacement.timeout(2000).emitWithAck("room:resume", first.sessions[medicIndex]!.credential)).ok).toBe(true);
+    expect(await restored).toEqual(final);
+    expect(manager.privateRole(replacement.id!)?.role).toBe("medic");
+    expect(await replacement.timeout(2000).emitWithAck("medical:treat", request)).toEqual({ ok: true, requestId: request.requestId });
+    expect(manager.medicalView(code)).toEqual(final);
+    if (timing === "before") {
+      await finishMovement();
+      expect(await replacement.timeout(2000).emitWithAck("medical:treat", { ...request, requestId: crypto.randomUUID() })).toEqual({ ok: false, error: "treatment-used" });
+      expect(manager.medicalView(code)!.characters[medicIndex]!.health).toBe(80); // 90 + 10 de cura - 20 de accidente.
+    }
+    await other.clients[0]!.timeout(2000).emitWithAck("client:ping");
+    expect(otherUpdates).toEqual([]);
+    expect(manager.medicalView(other.sessions[0]!.room.code)).toEqual(otherBefore);
+    expect(JSON.stringify(final)).not.toMatch(/role|knowledge|objective|characterId|token|probability|danger|random/);
+  });
+});
+
+test("6B: last medical unit is atomic across simultaneous treatments of different humans", async () => {
+  await fixture(async ({ room, manager, clock }) => {
+    const { clients, sessions } = await room();
+    const code = sessions[0]!.room.code;
+    clock.advance(60_000); clock.advance(30_000);
+    const medic = clients.find(client => manager.privateRole(client.id!)?.role === "medic")!;
+    const input = (index: number) => {
+      const current = manager.medicalView(code)!;
+      return { requestId: crypto.randomUUID(), gameId: current.gameId, round: current.round, targetParticipantId: sessions[index]!.credential.participantId };
+    };
+    for (const i of [0, 1, 2]) expect((await medic.timeout(2000).emitWithAck("medical:treat", input(i))).ok).toBe(true);
+    expect(manager.medicalView(code)!.inventory.medicalUnits).toBe(1);
+    await clients[0]!.timeout(2000).emitWithAck("round:advance");
+    clock.advance(60_000); clock.advance(30_000); // Lesiones nuevas, ronda distinta y un ?nico recurso compartido.
+    const before = manager.medicalView(code)!;
+    const updates = clients.map(client => nextMedical(client, state => state.inventory.medicalUnits === 0));
+    const replies = await Promise.all([medic.timeout(2000).emitWithAck("medical:treat", input(0)), medic.timeout(2000).emitWithAck("medical:treat", input(1))]);
+    expect(replies.filter(reply => reply.ok)).toHaveLength(1);
+    expect(replies.find(reply => !reply.ok)).toEqual({ ok: false, error: "no-medical-units" });
+    const results = await Promise.all(updates);
+    expect(new Set(results.map(state => JSON.stringify(state))).size).toBe(1);
+    const final = results[0]!;
+    expect(final.inventory).toEqual({ ...before.inventory, medicalUnits: 0 });
+    expect(final.treatments.filter(t => t.round === 2)).toHaveLength(1);
+    expect(final.characters[0]!.health).toBe(100);
+    expect(final.characters[1]!.health).toBe(before.characters[1]!.health);
+    expect(manager.publicVote(code)!.status).toBe("closed");
+    expect(manager.roundTwoView(code)!.phase).toBe("route-pending"); // Tratar no abre ni resuelve la ruta.
+  });
+});
+
+
+function nextRoundThree(client: Client, predicate: (state: import("@everest/shared").RoundThreeView) => boolean) {
+  return new Promise<import("@everest/shared").RoundThreeView>((resolve, reject) => {
+    const timer = setTimeout(() => { client.off("round-three:updated", listener); reject(new Error("Missing round three update")); }, 2000);
+    function listener(state: import("@everest/shared").RoundThreeView) {
+      if (predicate(state)) { clearTimeout(timer); client.off("round-three:updated", listener); resolve(state); }
+    }
+    client.on("round-three:updated", listener);
+  });
+}
+
+const roundThreeScenarios = [
+  ...(["fire-door", "pipe-gallery", "metal-debris", "NO_AGREEMENT"] as const).flatMap(route => [false, true].map(accident => ({ route, accident, reward: 0.99, retry: false }))),
+  { route: "metal-debris" as const, accident: false, reward: 0.1, retry: false },
+  { route: "fire-door" as const, accident: false, reward: 0.99, retry: true },
+];
+test.each(roundThreeScenarios)("7B: four sockets round 3 $route accident $accident reward $reward", async ({ route, accident, reward, retry }) => {
+  await fixture(async ({ room, manager, connect, clock, routeRandom }) => {
+    const first = await room(); const other = await room();
+    const code = first.sessions[0]!.room.code;
+    const host = () => first.clients[0]!;
+    expect(await host().timeout(2000).emitWithAck("round-three:advance")).toEqual({ ok: false, error: "round-not-ready" });
+    expect(await host().timeout(2000).emitWithAck("round-three:open")).toEqual({ ok: false, error: "round-not-ready" });
+    async function finishTwo(target: typeof first) {
+      for (const client of target.clients.slice(0, 3)) await cast(client, target.vote);
+      await target.clients[0]!.timeout(2000).emitWithAck("round:advance");
+      expect(await target.clients[0]!.timeout(2000).emitWithAck("round-three:advance")).toEqual({ ok: false, error: "round-not-ready" });
+      const rescue = manager.publicVote(target.sessions[0]!.room.code)!;
+      for (const client of target.clients.slice(0, 3)) await cast(client, rescue);
+      await target.clients[0]!.timeout(2000).emitWithAck("route:open");
+      const routeVote = manager.publicVote(target.sessions[0]!.room.code)!;
+      for (const client of target.clients.slice(0, 3)) await cast(client, routeVote, "unstable-corridor");
+    }
+    await finishTwo(first); await finishTwo(other);
+    const bellhop = first.clients.find(c => manager.privateRole(c.id!)?.role === "bellhop")!;
+    const suppliesTwo = manager.suppliesView(code)!;
+    for (const session of first.sessions) expect((await bellhop.timeout(2000).emitWithAck("pack:give", { requestId: crypto.randomUUID(), windowId: suppliesTwo.windowId!, targetParticipantId: session.credential.participantId })).ok).toBe(true);
+    const before = manager.suppliesView(code)!;
+    expect(before.characters.every(c => c.energy === 50)).toBe(true);
+    const sheets = first.clients.map(client => manager.privateRole(client.id!));
+    const historyTwo = manager.roundTwoView(code)!;
+    const otherBefore = manager.suppliesView(other.sessions[0]!.room.code);
+    const unrelated: unknown[] = [];
+    other.clients[0]!.on("round-three:updated", state => unrelated.push(state));
+    expect(await first.clients[1]!.timeout(2000).emitWithAck("round-three:advance")).toEqual({ ok: false, error: "not-creator" });
+    const preparing = first.clients.map(client => nextRoundThree(client, state => state.phase === "preparation"));
+    expect(await host().timeout(2000).emitWithAck("round-three:advance")).toEqual({ ok: true });
+    const preparations = await Promise.all(preparing);
+    expect(new Set(preparations.map(state => JSON.stringify(state))).size).toBe(1);
+    const prep = preparations[0]!;
+    expect(prep.options.map(o => o.id)).toEqual(["fire-door", "pipe-gallery", "metal-debris"]);
+    expect(prep.vote).toBeNull(); expect(prep.movement).toBeNull(); expect(prep.afterRoute).toBeNull();
+    expect(clock.tasks.size).toBe(0);
+    expect(manager.suppliesView(code)).toEqual({ ...before, round: 3, windowId: expect.any(String) });
+    expect(manager.publicVote(code)).toBeNull();
+    expect(await cast(host(), first.vote, "fire-door")).toEqual({ ok: false, error: "route-not-open" });
+    expect(await host().timeout(2000).emitWithAck("round-three:advance")).toEqual({ ok: true });
+    expect(manager.roundThreeView(code)).toEqual(prep);
+    expect(await first.clients[1]!.timeout(2000).emitWithAck("round-three:open")).toEqual({ ok: false, error: "not-creator" });
+    for (const option of prep.options) expect(Object.keys(option).sort()).toEqual(["description", "energyCost", "id", "name"]);
+    const publicText = JSON.stringify(prep);
+    expect(publicText).not.toMatch(/probability|danger|random|medical-conference-room|supply-warehouse|gained|LOW|MODERATE|EXTREME/);
+    for (const sheet of sheets) {
+      expect(publicText).not.toContain(sheet!.sheet.objective);
+      for (const knowledge of sheet!.sheet.knowledge) expect(publicText).not.toContain(knowledge.text);
+    }
+    async function reload(phase: "preparation" | "voting" | "completed") {
+      const disconnected = new Promise<void>(resolve => first.clients[1]!.once("room:updated", () => resolve()));
+      host().disconnect(); await disconnected;
+      const replacement = await connect(); first.clients[0] = replacement;
+      const restored = nextRoundThree(replacement, state => state.phase === phase);
+      expect((await replacement.timeout(2000).emitWithAck("room:resume", first.sessions[0]!.credential)).ok).toBe(true);
+      expect(manager.privateRole(replacement.id!)).toEqual(sheets[0]);
+      return restored;
+    }
+    expect(await reload("preparation")).toEqual(prep);
+    expect((await host().timeout(2000).emitWithAck("round-three:open")).ok).toBe(true);
+    let vote = manager.publicVote(code)!;
+    expect(vote).toMatchObject({ round: 3, attemptNumber: 1, requiredVotes: 3, status: "open" });
+    expect(vote.deadline - vote.serverNow).toBe(60_000);
+    expect(await host().timeout(2000).emitWithAck("round-three:open")).toEqual({ ok: true });
+    expect(manager.publicVote(code)).toEqual(vote);
+    expect(await cast(other.clients[0]!, vote, "fire-door")).toEqual({ ok: false, error: "wrong-decision" });
+    const outsider = await connect();
+    expect(await cast(outsider, vote, "fire-door")).toEqual({ ok: false, error: "invalid-session" });
+    const forged = { ...input(vote, "fire-door"), participantId: first.sessions[1]!.credential.participantId };
+    expect(await host().timeout(2000).emitWithAck("vote:cast", forged)).toEqual({ ok: false, error: "invalid-input" });
+    expect(await cast(host(), vote, "invented")).toEqual({ ok: false, error: "invalid-option" });
+    const votedRoute = route === "NO_AGREEMENT" ? "fire-door" : route;
+    expect((await cast(host(), vote, votedRoute)).ok).toBe(true);
+    expect(await cast(host(), vote, votedRoute)).toEqual({ ok: false, error: "duplicate-vote" });
+    const active = manager.roundThreeView(code)!;
+    expect(await reload("voting")).toEqual(active);
+    expect(manager.votingSession(host().id!)!.own.optionId).toBe(votedRoute);
+    const pending = first.clients.map(client => nextRoundThree(client, state => state.phase === "completed"));
+    routeRandom.mockClear();
+    routeRandom.mockReturnValue(accident ? 0 : 0.99);
+    if (route === "metal-debris") {
+      routeRandom.mockReturnValueOnce(accident ? 0 : 0.99);
+      if (accident) routeRandom.mockReturnValueOnce(0).mockReturnValueOnce(0);
+      routeRandom.mockReturnValueOnce(reward);
+    }
+    if (retry) {
+      const oldAttempt = vote;
+      const next = nextVote(host(), state => state.round === 3 && state.attemptNumber === 2);
+      clock.advance(60_000); vote = await next;
+      expect(vote.deadline - vote.serverNow).toBe(30_000);
+      expect(await cast(host(), oldAttempt, votedRoute)).toEqual({ ok: false, error: "wrong-attempt" });
+      expect(manager.votingSession(host().id!)!.own.optionId).toBeNull();
+      expect((await cast(host(), vote, votedRoute)).ok).toBe(true);
+    }
+    if (route === "NO_AGREEMENT") {
+      const retry = nextVote(host(), state => state.round === 3 && state.attemptNumber === 2);
+      clock.advance(60_000); vote = await retry;
+      expect(vote.deadline - vote.serverNow).toBe(30_000);
+      expect(manager.votingSession(host().id!)!.own.optionId).toBeNull();
+      clock.advance(30_000);
+    } else {
+      await cast(first.clients[1]!, vote, route);
+      expect(manager.publicVote(code)!.status).toBe("open");
+      await cast(first.clients[2]!, vote, route);
+    }
+    const results = await Promise.all(pending);
+    expect(new Set(results.map(state => JSON.stringify(state))).size).toBe(1);
+    const final = results[0]!;
+    const actual = route === "NO_AGREEMENT" ? "pipe-gallery" : route;
+    const cost = actual === "fire-door" ? 20 : actual === "pipe-gallery" ? 10 : 30;
+    const damage = actual === "pipe-gallery" ? 30 : 10;
+    expect(final.selection!.outcome).toBe(route);
+    expect(final.forced).toBe(route === "NO_AGREEMENT"); expect(final.earthquake).toBe(final.forced);
+    expect(final.blockedRoutes).toEqual(final.forced ? ["fire-door", "metal-debris"] : []);
+    expect(final.movement).toMatchObject({ routeId: actual, accident, energyCost: cost, crowbarLost: actual === "fire-door" });
+    expect(final.afterRoute!.characters.map(c => [c.health, c.energy])).toEqual(before.characters.map((c, i) => [c.health - (actual === "pipe-gallery" ? 20 : 0) - (accident && i < 2 ? damage : 0), c.energy - cost]));
+    expect(final.movement!.gained).toEqual({ packs: actual === "metal-debris" ? reward < 0.7 ? 4 : 8 : 0, medicalUnits: actual === "fire-door" ? 2 : 0 });
+    expect(final.afterRoute!.crowbar).toBe(actual === "fire-door" ? "lost" : "available");
+    const calls = (accident ? 3 : 1) + (actual === "metal-debris" ? 1 : 0);
+    expect(routeRandom).toHaveBeenCalledTimes(calls);
+    expect(await cast(first.clients[3]!, vote, actual)).toEqual({ ok: false, error: "closed" });
+    expect(await reload("completed")).toEqual(final);
+    await host().timeout(2000).emitWithAck("round-three:open");
+    await host().timeout(2000).emitWithAck("round-three:advance");
+    clock.advance(90_000);
+    expect(manager.roundThreeView(code)!.movement).toEqual(final.movement);
+    expect(manager.suppliesView(code)!.inventory).toEqual(final.afterRoute!.inventory);
+    expect(routeRandom).toHaveBeenCalledTimes(calls);
+    expect(manager.roundTwoView(code)).toEqual(historyTwo);
+    expect(manager.suppliesView(other.sessions[0]!.room.code)).toEqual(otherBefore);
+    expect(unrelated).toEqual([]);
+    expect(JSON.stringify(final)).not.toMatch(/probability|danger|random|characterId|token|knowledge|objective/);
+    expect(await host().timeout(2000).emitWithAck("round:advance")).toEqual({ ok: false, error: "round-not-ready" });
+  });
+});
+
+
+test("7B: packs and medical treatments round 3 preserve history, round limits and reconnection", async () => {
+  await fixture(async ({ room, manager, routeRandom, connect }) => {
+    const { clients, sessions, vote } = await room();
+    const code = sessions[0]!.room.code;
+    const host = clients[0]!;
+    for (const client of clients.slice(0, 3)) await cast(client, vote);
+    await host.timeout(2000).emitWithAck("round:advance");
+    const rescue = manager.publicVote(code)!;
+    for (const client of clients.slice(0, 3)) await cast(client, rescue);
+    routeRandom.mockReturnValue(0);
+    await host.timeout(2000).emitWithAck("route:open");
+    const routeTwo = manager.publicVote(code)!;
+    for (const client of clients.slice(0, 3)) await cast(client, routeTwo, "unstable-corridor");
+    const bellhop = clients.find(c => manager.privateRole(c.id!)?.role === "bellhop")!;
+    const medic = clients.find(c => manager.privateRole(c.id!)?.role === "medic")!;
+    const before = manager.suppliesView(code)!;
+    for (const session of sessions) expect((await bellhop.timeout(2000).emitWithAck("pack:give", { requestId: crypto.randomUUID(), windowId: before.windowId!, targetParticipantId: session.credential.participantId })).ok).toBe(true);
+    const medicalTwo = { requestId: crypto.randomUUID(), gameId: before.gameId, round: 2 as const, targetParticipantId: sessions[0]!.credential.participantId };
+    expect((await medic.timeout(2000).emitWithAck("medical:treat", medicalTwo)).ok).toBe(true);
+    const currentTwo = manager.suppliesView(code)!;
+    await host.timeout(2000).emitWithAck("round-three:advance");
+    expect(manager.suppliesView(code)).toEqual({ ...currentTwo, round: 3, windowId: expect.any(String) });
+    expect(await bellhop.timeout(2000).emitWithAck("pack:give", { requestId: crypto.randomUUID(), windowId: before.windowId!, targetParticipantId: sessions[0]!.credential.participantId })).toEqual({ ok: false, error: "supplies-not-open" });
+    expect(await medic.timeout(2000).emitWithAck("medical:treat", { ...medicalTwo, requestId: crypto.randomUUID() })).toEqual({ ok: false, error: "wrong-round" });
+    const preTreatment = { requestId: crypto.randomUUID(), gameId: before.gameId, round: 3 as const, targetParticipantId: sessions[1]!.credential.participantId };
+    expect((await medic.timeout(2000).emitWithAck("medical:treat", preTreatment)).ok).toBe(true);
+    await host.timeout(2000).emitWithAck("round-three:open");
+    const thirdVote = manager.publicVote(code)!;
+    for (const client of clients.slice(0, 3)) await cast(client, thirdVote, "pipe-gallery");
+    const history = manager.roundThreeView(code)!;
+    expect(history.afterRoute!.characters.slice(0, 2).map(c => [c.health, c.energy])).toEqual([[50, 40], [50, 40]]);
+    const actual = manager.suppliesView(code)!;
+    const calls = routeRandom.mock.calls.length;
+    const postTreatment = { ...medicalTwo, requestId: crypto.randomUUID(), round: 3 as const };
+    const medicalUpdates = clients.map(c => nextMedical(c, state => state.inventory.medicalUnits === 1));
+    expect((await medic.timeout(2000).emitWithAck("medical:treat", postTreatment)).ok).toBe(true);
+    expect((await Promise.all(medicalUpdates)).every(state => state.characters[0]!.health === 70)).toBe(true);
+    expect(await medic.timeout(2000).emitWithAck("medical:treat", { ...preTreatment, requestId: crypto.randomUUID() })).toEqual({ ok: false, error: "treatment-used" });
+    const pack = { requestId: crypto.randomUUID(), windowId: actual.windowId!, targetParticipantId: sessions[0]!.credential.participantId };
+    const packUpdates = clients.map(c => nextSupplies(c, state => state.inventory.packs === 3));
+    expect((await bellhop.timeout(2000).emitWithAck("pack:give", pack)).ok).toBe(true);
+    const currentStates = await Promise.all(packUpdates);
+    expect(new Set(currentStates.map(s => JSON.stringify(s))).size).toBe(1);
+    expect(currentStates[0]!.characters[0]).toMatchObject({ health: 70, energy: 65 });
+    expect(currentStates[0]!.inventory).toEqual({ packs: 3, medicalUnits: 1 });
+    expect(manager.medicalView(code)!.treatments.map(t => [t.round, t.participantId])).toEqual([[2, sessions[0]!.credential.participantId], [3, sessions[1]!.credential.participantId], [3, sessions[0]!.credential.participantId]]);
+    const disconnected = new Promise<void>(resolve => clients[1]!.once("room:updated", () => resolve()));
+    medic.disconnect(); await disconnected;
+    const replacement = await connect();
+    const restored = nextMedical(replacement, state => state.round === 3);
+    await replacement.timeout(2000).emitWithAck("room:resume", sessions[0]!.credential);
+    expect((await restored).inventory).toEqual({ packs: 3, medicalUnits: 1 });
+    expect((await replacement.timeout(2000).emitWithAck("medical:treat", postTreatment)).ok).toBe(true);
+    expect((await bellhop.timeout(2000).emitWithAck("pack:give", pack)).ok).toBe(true);
+    expect(manager.suppliesView(code)).toEqual(currentStates[0]);
+    expect(manager.roundThreeView(code)).toEqual(history);
+    expect(routeRandom).toHaveBeenCalledTimes(calls);
+  });
+});
+
+
+test("7B: a blocked round 3 reaches four sockets and survives reconnection without another roll", async () => {
+  await fixture(async ({ room, manager, routeRandom, connect }) => {
+    const { clients, sessions, vote } = await room();
+    const host = clients[0]!; const code = sessions[0]!.room.code;
+    for (const client of clients.slice(0, 3)) await cast(client, vote);
+    await host.timeout(2000).emitWithAck("round:advance");
+    const rescue = manager.publicVote(code)!;
+    for (const client of clients.slice(0, 3)) await cast(client, rescue);
+    await host.timeout(2000).emitWithAck("route:open");
+    const secondRoute = manager.publicVote(code)!;
+    for (const client of clients.slice(0, 3)) await cast(client, secondRoute, "unstable-corridor");
+    await host.timeout(2000).emitWithAck("round-three:advance");
+    const before = manager.suppliesView(code)!;
+    expect(before.characters.every(c => c.energy === 25)).toBe(true);
+    routeRandom.mockClear();
+    await host.timeout(2000).emitWithAck("round-three:open");
+    const third = manager.publicVote(code)!;
+    const updates = clients.map(c => nextRoundThree(c, state => state.phase === "blocked"));
+    for (const client of clients.slice(0, 3)) await cast(client, third, "metal-debris");
+    const states = await Promise.all(updates);
+    expect(new Set(states.map(s => JSON.stringify(s))).size).toBe(1);
+    const final = states[0]!;
+    expect(final).toMatchObject({ phase: "blocked", blocked: "transport-vote-pending", movement: null, afterRoute: null });
+    expect(manager.suppliesView(code)).toEqual({ ...before, windowId: null });
+    const disconnected = new Promise<void>(resolve => clients[1]!.once("room:updated", () => resolve()));
+    host.disconnect(); await disconnected;
+    const replacement = await connect();
+    const restored = nextRoundThree(replacement, state => state.phase === "blocked");
+    await replacement.timeout(2000).emitWithAck("room:resume", sessions[0]!.credential);
+    expect(await restored).toEqual(final);
+    await replacement.timeout(2000).emitWithAck("round-three:open");
+    await replacement.timeout(2000).emitWithAck("round-three:advance");
+    expect(routeRandom).not.toHaveBeenCalled();
+    expect(manager.suppliesView(code)).toEqual({ ...before, windowId: null });
+  });
+});
+
+
+test.each([2, 3] as const)("8A: packs in round %i preparation, F5 and rejection inside movement", async round => {
+  await fixture(async ({ room, manager, connect, routeRandom }) => {
+    const first = await room(); const other = await room();
+    async function prepare(target: typeof first) {
+      for (const client of target.clients.slice(0, 3)) await cast(client, target.vote);
+      await target.clients[0]!.timeout(2000).emitWithAck("round:advance");
+      const rescue = manager.publicVote(target.sessions[0]!.room.code)!;
+      for (const client of target.clients.slice(0, 3)) await cast(client, rescue);
+      if (round === 3) {
+        await target.clients[0]!.timeout(2000).emitWithAck("route:open");
+        const vote = manager.publicVote(target.sessions[0]!.room.code)!;
+        for (const client of target.clients.slice(0, 3)) await cast(client, vote, "unstable-corridor");
+        await target.clients[0]!.timeout(2000).emitWithAck("round-three:advance");
+      }
+    }
+    await prepare(first); await prepare(other);
+    const code = first.sessions[0]!.room.code;
+    const before = manager.suppliesView(code)!;
+    expect(before.windowId).not.toBeNull();
+    const otherBefore = manager.suppliesView(other.sessions[0]!.room.code);
+    const bellhopIndex = first.clients.findIndex(c => manager.privateRole(c.id!)?.role === "bellhop");
+    let bellhop = first.clients[bellhopIndex]!;
+    const input = { requestId: crypto.randomUUID(), windowId: before.windowId!, targetParticipantId: first.sessions[0]!.credential.participantId };
+    const updates = first.clients.map(client => nextSupplies(client, state => state.inventory.packs === 7));
+    expect((await bellhop.timeout(2000).emitWithAck("pack:give", input)).ok).toBe(true);
+    const all = await Promise.all(updates);
+    expect(new Set(all.map(state => JSON.stringify(state))).size).toBe(1);
+    expect(all[0]!.characters[0]!.energy).toBe(before.characters[0]!.energy + 25);
+    const disconnected = new Promise<void>(resolve => first.clients[0]!.once("room:updated", () => resolve()));
+    bellhop.disconnect(); await disconnected;
+    bellhop = await connect(); first.clients[bellhopIndex] = bellhop;
+    const restored = nextSupplies(bellhop, state => state.round === round);
+    await bellhop.timeout(2000).emitWithAck("room:resume", first.sessions[bellhopIndex]!.credential);
+    expect(await restored).toEqual(all[0]);
+    expect((await bellhop.timeout(2000).emitWithAck("pack:give", input)).ok).toBe(true);
+    const rejectedDuringResolution: unknown[] = [];
+    routeRandom.mockImplementation(() => {
+      rejectedDuringResolution.push(manager.givePack(bellhop.id!, { ...input, requestId: crypto.randomUUID() }));
+      return 0.99;
+    });
+    const open = round === 2 ? "route:open" as const : "round-three:open" as const;
+    await first.clients[0]!.timeout(2000).emitWithAck(open);
+    expect(manager.suppliesView(code)!.windowId).toBeNull();
+    expect(await bellhop.timeout(2000).emitWithAck("pack:give", { ...input, requestId: crypto.randomUUID() })).toEqual({ ok: false, error: "supplies-not-open" });
+    const vote = manager.publicVote(code)!;
+    for (const client of first.clients.slice(0, 3)) await cast(client, vote, round === 2 ? "unstable-corridor" : "fire-door");
+    expect(rejectedDuringResolution).toEqual([{ ok: false, error: "supplies-not-open" }]);
+    expect(manager.suppliesView(code)!.inventory.packs).toBe(7);
+    expect(manager.suppliesView(code)!.windowId).not.toBe(input.windowId);
+    expect(await bellhop.timeout(2000).emitWithAck("pack:give", { ...input, requestId: crypto.randomUUID() })).toEqual({ ok: false, error: "supplies-not-open" });
+    expect(manager.suppliesView(other.sessions[0]!.room.code)).toEqual(otherBefore);
+  });
+});
+
+
+test("8A: cumulative deaths are synchronized, private sheets revoked and effects not repeated after F5", async () => {
+  await fixture(async ({ room, manager, clock, routeRandom, connect }) => {
+    const { clients, sessions } = await room();
+    const code = sessions[0]!.room.code;
+    routeRandom.mockReturnValue(0);
+    clock.advance(60_000); clock.advance(30_000);
+    await clients[0]!.timeout(2000).emitWithAck("round:advance");
+    clock.advance(60_000); clock.advance(30_000);
+    await clients[0]!.timeout(2000).emitWithAck("route:open");
+    clock.advance(60_000); clock.advance(30_000);
+    expect(manager.suppliesView(code)!.characters.map(c => c.health)).toEqual([50, 50, 70, 70]);
+    await clients[0]!.timeout(2000).emitWithAck("round-three:advance");
+    await clients[0]!.timeout(2000).emitWithAck("round-three:open");
+    const vote = manager.publicVote(code)!;
+    const revoked = clients.slice(0, 2).map(client => new Promise<void>(resolve => client.once("game:role-unavailable", resolve)));
+    const updates = clients.map(client => nextRoundThree(client, state => state.phase === "completed"));
+    for (const client of clients.slice(0, 3)) await cast(client, vote, "pipe-gallery");
+    await Promise.all(revoked);
+    const states = await Promise.all(updates);
+    expect(new Set(states.map(state => JSON.stringify(state))).size).toBe(1);
+    const final = states[0]!;
+    expect(final.afterRoute!.characters.map(c => c.health)).toEqual([0, 0, 50, 50]);
+    expect(final.movement!.victims.map(v => v.participantId)).toEqual(sessions.slice(0, 2).map(s => s.credential.participantId));
+    expect(manager.privateRole(clients[0]!.id!)).toBeNull();
+    expect(manager.privateRole(clients[1]!.id!)).toBeNull();
+    const pack = { requestId: crypto.randomUUID(), windowId: manager.suppliesView(code)!.windowId!, targetParticipantId: sessions[0]!.credential.participantId };
+    expect(await clients[2]!.timeout(2000).emitWithAck("pack:give", pack)).toEqual({ ok: false, error: "character-dead" });
+    // La sesión sigue siendo válida, pero la muerte retira la autoridad activa.
+    expect(await clients[0]!.timeout(2000).emitWithAck("vote:cast", {
+      decisionId: vote.decisionId, attemptId: vote.attemptId, optionId: "pipe-gallery",
+    })).toEqual({ ok: false, error: "dead" });
+    expect(await clients[0]!.timeout(2000).emitWithAck("medical:treat", {
+      requestId: crypto.randomUUID(), gameId: manager.suppliesView(code)!.gameId,
+      round: 3, targetParticipantId: sessions[2]!.credential.participantId,
+    })).toEqual({ ok: false, error: "medic-dead" });
+    expect(manager.roundThreeView(code)).toEqual(final);
+    const calls = routeRandom.mock.calls.length;
+    const disconnected = new Promise<void>(resolve => clients[2]!.once("room:updated", () => resolve()));
+    clients[0]!.disconnect(); await disconnected;
+    const replacement = await connect();
+    const leaked: unknown[] = [];
+    replacement.on("game:role", role => leaked.push(role));
+    const restored = nextRoundThree(replacement, state => state.phase === "completed");
+    await replacement.timeout(2000).emitWithAck("room:resume", sessions[0]!.credential);
+    expect(await restored).toEqual(final);
+    await replacement.timeout(2000).emitWithAck("client:ping");
+    expect(leaked).toEqual([]);
+    expect(routeRandom).toHaveBeenCalledTimes(calls);
+  });
+});

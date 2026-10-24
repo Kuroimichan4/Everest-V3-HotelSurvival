@@ -1,5 +1,9 @@
+import { RoundThree } from "./RoundThree";
+import type { RoundThreeView } from "@everest/shared";
 import { RoundTwo } from "./RoundTwo";
 import { Supplies } from "./Supplies";
+import { Medical } from "./Medical";
+import type { MedicalView, TreatmentInput, TreatmentReply } from "@everest/shared";
 import type { SuppliesView, PackInput, PackReply } from "@everest/shared";
 import type { RoundTwoView } from "@everest/shared";
 import { useEffect, useRef, useState } from "react";
@@ -38,9 +42,11 @@ export function Lobby() {
   const [room, setRoom] = useState<PublicRoom | null>(null);
   const [role, setRole] = useState<PrivateRole | null>(null);
   const [vote, setVote] = useState<PublicVote | null>(null);
+  const [roundThree, setRoundThree] = useState<RoundThreeView | null>(null);
   const [roundTwo, setRoundTwo] = useState<RoundTwoView | null>(null);
   const [summary, setSummary] = useState<RoundOneSummary | null>(null);
   const [supplies, setSupplies] = useState<SuppliesView | null>(null);
+  const [medical, setMedical] = useState<MedicalView | null>(null);
   const [ownVote, setOwnVote] = useState<OwnVote | null>(null);
   const [votingBusy, setVotingBusy] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -84,8 +90,13 @@ export function Lobby() {
     socket.on("vote:updated", setVote);
     socket.on("round:completed", setSummary);
     socket.on("round-two:updated", setRoundTwo);
+    socket.on("round-three:updated", setRoundThree);
+    socket.on("disconnect", () => setRoundThree(null));
     socket.on("supplies:updated", setSupplies);
+    socket.on("medical:updated", setMedical);
+    socket.on("disconnect", () => setMedical(null));
     socket.on("vote:own", setOwnVote);
+    socket.on("game:role-unavailable", () => setRole(null));
     socket.on("game:role", (assignment) => {
       if (assignment.participantId === credential.current?.participantId) setRole(assignment);
     });
@@ -137,6 +148,16 @@ export function Lobby() {
     });
   }
 
+  function roundThreeAction(action: "advance" | "open") {
+    if (!socketRef.current?.connected || !authenticated || busy) return;
+    setBusy(true); setError("");
+    socketRef.current.timeout(5000).emit(action === "advance" ? "round-three:advance" : "round-three:open", (err, reply) => {
+      setBusy(false);
+      if (err) setError("No llegó la respuesta. Reconecta para recuperar el estado.");
+      else if (!reply.ok) setError("El servidor rechazó la solicitud: " + reply.error);
+    });
+  }
+
   function routeAction(action: "reveal" | "open") {
     if (!socketRef.current?.connected || !authenticated || votingBusy) return;
     setVotingBusy(true);
@@ -166,6 +187,12 @@ export function Lobby() {
     const socket = socketRef.current;
     if (!socket?.connected || !authenticated) { done(null); return; }
     socket.timeout(5000).emit("pack:give", input, (err, reply) => done(err ? null : reply));
+  }
+
+  function treat(input: TreatmentInput, done: (reply: TreatmentReply | null) => void) {
+    const socket = socketRef.current;
+    if (!socket?.connected || !authenticated) { done(null); return; }
+    socket.timeout(5000).emit("medical:treat", input, (err, reply) => done(err ? null : reply));
   }
 
   const count = room?.participants.filter((participant) => participant.connected).length ?? 0;
@@ -201,19 +228,28 @@ export function Lobby() {
         })}</ol>
         {room.status === "waiting" && creator && <button disabled={!connected || !authenticated || busy || count !== 4} onClick={start}>Iniciar partida</button>}
         {room.status === "started" && <>
-          <p aria-live="polite">Partida iniciada.{!role && " Recuperando tu ficha…"}</p>
+          <p aria-live="polite">Partida iniciada.{!role && (supplies?.characters.some(c => c.participantId === credential.current?.participantId && (c.health === 0 || c.eliminated))
+            ? " Tu personaje ha fallecido o ha sido eliminado; su ficha privada ya no está disponible." : " Recuperando tu ficha…")}</p>
           {authenticated && role && <CharacterSheet sheet={role.sheet} />}
-          {authenticated && vote && (roundTwo && vote.round === 2
+          {authenticated && roundThree ? <RoundThree state={roundThree} own={ownVote} creator={creator}
+            enabled={connected && !!role && !!supplies?.characters.some(c => c.participantId === role.participantId && c.health > 0 && !c.eliminated)}
+            busy={busy || votingBusy} onOpen={() => roundThreeAction("open")} onVote={cast} /> : authenticated && vote && (roundTwo && vote.round === 2
             ? <RoundTwo maintenance={role?.role === "maintenance"} creator={creator} onRouteAction={routeAction} state={roundTwo} vote={vote} own={ownVote} enabled={connected && !!role} busy={votingBusy} onVote={cast} />
             : <RoundOne summary={summary} vote={vote} own={ownVote} enabled={connected && !!role} busy={votingBusy} onVote={cast} />)}
-          {authenticated && supplies && <Supplies key={supplies.gameId} state={supplies} bellhop={role?.role === "bellhop" && supplies.characters.some(c => c.participantId === role.participantId && c.health > 0)}
+          {authenticated && supplies && <Supplies key={supplies.gameId} state={supplies} bellhop={role?.role === "bellhop" && supplies.characters.some(c => c.participantId === role.participantId && c.health > 0 && !c.eliminated)}
             enabled={connected && !!role} onGive={givePack} />}
+          {authenticated && medical && <Medical key={medical.gameId} state={medical}
+            medic={role?.role === "medic" && medical.characters.some(c => c.participantId === role.participantId && c.health > 0 && !c.eliminated)}
+            enabled={connected && !!role} onTreat={treat} />}
+          {authenticated && !roundThree && roundTwo?.phase === "completed" && (creator
+            ? <button disabled={!connected || busy} onClick={() => roundThreeAction("advance")}>Avanzar a ronda 3</button>
+            : <p>Esperando a que el anfitrión avance a la ronda 3.</p>)}
           {authenticated && summary && !roundTwo && (creator
             ? <button disabled={!connected || busy} onClick={advance}>Avanzar a ronda 2</button>
             : <p>Esperando a que el creador avance a la ronda 2.</p>)}
         </>}
       </>}
-      <p className="notice">Versión de desarrollo: las salas se pierden al reiniciar el servidor. Disponibles las rondas 1 y 2. La ronda 3 queda pendiente.</p>
+      <p className="notice">Versión de desarrollo: las salas se pierden al reiniciar el servidor. Disponibles las rondas 1, 2 y 3. La ronda 4 queda pendiente.</p>
     </section>
   );
 }

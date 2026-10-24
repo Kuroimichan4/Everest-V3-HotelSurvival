@@ -1,3 +1,6 @@
+import { beginRoundThree, resolveRoundThreeChoice } from "../simulation/round-three.js";
+import { publicRoundThreeRouteViews } from "../simulation/round-three-routes.js";
+import type { RoundThreeView, RoundThreeRouteId } from "@everest/shared";
 import { publicRouteViews, privateRouteViews, checkRouteRequirements } from "../simulation/routes.js";
 import type { RouteId, RouteChoiceView, RouteActionReply } from "@everest/shared";
 import type { RoundTwoView } from "@everest/shared";
@@ -16,13 +19,20 @@ import type { RoundOneSummary } from "@everest/shared";
 import { resolveRoundOne } from "../simulation/round-one.js";
 import { resolveRoundTwoMovement } from "../simulation/round-two-movement.js";
 import type { RandomSource } from "../simulation/routes.js";
-import { consumePack } from "../simulation/operations.js";
+import { administerTreatment, consumePack } from "../simulation/operations.js";
 import type { PackInput, PackReply, SuppliesView } from "@everest/shared";
+import type { MedicalView, TreatmentInput, TreatmentReply } from "@everest/shared";
 
 interface Game {
+  resolvingMovement?: boolean;
+  roundOneBlocked?: string;
+  roundThree?: { preparationId: string; voting?: RoomVoting; selection: RoundThreeView["selection"]; earthquake: boolean;
+    blockedRoutes: RoundThreeRouteId[]; afterRoute?: NonNullable<RoundThreeView["afterRoute"]> };
+  roundTwoSummary?: RoundTwoView;
+  treatmentRequests: Map<string, TreatmentInput & { actorId: string }>;
   packRequests: Map<string, PackInput & { actorId: string }>;
   roundTwoAfterRoute?: Pick<RoundTwoView, "characters" | "inventory">;
-  route?: { revealed: boolean; voting?: RoomVoting; options?: RouteChoiceView["options"]; result: RouteChoiceView["result"] };
+  route?: { preparationId: string; revealed: boolean; voting?: RoomVoting; options?: RouteChoiceView["options"]; result: RouteChoiceView["result"] };
   roundOneSummary?: RoundOneSummary;
   voting: RoomVoting;
   id: string;
@@ -53,12 +63,16 @@ export class RoomManager {
   constructor(private readonly randomIndex?: RandomIndex, private readonly clock: VotingClock = systemClock,
     private readonly routeRandom: RandomSource = Math.random) {}
 
-  dispose(): void { for (const room of this.rooms.values()) { room.game?.voting.dispose(); room.game?.route?.voting?.dispose(); } }
-  publicVote(code: string) { const game = this.rooms.get(code)?.game; return game ? (game.route?.voting ?? game.voting).publicView() : null; }
+  dispose(): void { for (const room of this.rooms.values()) { room.game?.voting.dispose(); room.game?.route?.voting?.dispose(); room.game?.roundThree?.voting?.dispose(); } }
+  private activeVoting(game: Game): RoomVoting | null {
+    return game.state.currentRound === 3 ? game.roundThree?.voting ?? null : game.route?.voting ?? game.voting;
+  }
+  publicVote(code: string) { const game = this.rooms.get(code)?.game; return game ? this.activeVoting(game)?.publicView() ?? null : null; }
   votingSession(socketId: string) {
     const connection = this.connections.get(socketId);
     if (!connection?.room.game) return null;
-    const voting = connection.room.game.route?.voting ?? connection.room.game.voting;
+    const voting = this.activeVoting(connection.room.game);
+    if (!voting) return null;
     voting.refresh();
     return { public: voting.publicView(), own: voting.ownView(connection.participant.id) };
   }
@@ -69,7 +83,17 @@ export class RoomManager {
     const character = room.game!.state.characters.find((entry) => entry.id === participant.characterId);
     if (!character) return { ok: false, error: "not-authorized" };
     if (!isAlive(character)) return { ok: false, error: "dead" };
-    return (room.game!.route?.voting ?? room.game!.voting).vote(participant.id, input);
+    const voting = this.activeVoting(room.game!);
+    if (voting && room.game!.state.currentRound === 3 && input && typeof input === "object"
+      && Object.keys(input).sort().join(",") === "attemptId,decisionId,optionId") {
+      const candidate = input as { decisionId: unknown; attemptId: unknown; optionId: unknown };
+      const own = voting.ownView(participant.id);
+      const current = voting.publicView();
+      if (current.status === "open" && current.deadline > this.clock.now() && own.optionId
+        && candidate.decisionId === own.decisionId && candidate.attemptId === own.attemptId
+        && candidate.optionId === own.optionId) return { ok: false, error: "duplicate-vote" };
+    }
+    return voting ? voting.vote(participant.id, input) : { ok: false, error: "route-not-open" };
   }
 
   private publicRoom(room: Room): PublicRoom {
@@ -151,7 +175,7 @@ export class RoomManager {
       ...initial.characters[index]!, id: newId(), role: roles[index]!,
     }));
     // Sin await entre validación y escritura: dos peticiones no pueden iniciar dos veces.
-    room.game = { id: newId(), packRequests: new Map(), state: { ...initial, characters },
+    room.game = { id: newId(), packRequests: new Map(), treatmentRequests: new Map(), state: { ...initial, characters },
       voting: new RoomVoting(room.participants.map((player, index) => ({ participantId: player.id, alive: isAlive(characters[index]!) })),
         this.clock, () => { this.resolveRound(room); this.onVotingChanged(room.code); }) };
     room.participants.forEach((player, index) => { player.characterId = characters[index]!.id; });
@@ -165,7 +189,7 @@ export class RoomManager {
       const vote = game.voting.publicView();
       if (!vote.result || game.state.roundTwo?.resolution) return;
       const resolved = resolveRoundTwo(game.state, vote.decisionId, vote.result);
-      if (resolved.ok) { game.state = resolved.state; game.route = { revealed: false, result: null }; }
+      if (resolved.ok) { game.state = resolved.state; game.route = { preparationId: newId(), revealed: false, result: null }; }
       else if (resolved.error === "insufficient-energy") game.state = { ...game.state,
         roundTwo: { ...game.state.roundTwo!, blocked: "insufficient-energy" } };
       return;
@@ -177,7 +201,7 @@ export class RoomManager {
     if (resolved.ok) {
       game.state = resolved.state;
       game.roundOneSummary = this.roundSummary(room.code)!;
-    }
+    } else game.roundOneBlocked = resolved.error;
   }
 
   advanceRound(socketId: string): VoteReply {
@@ -218,6 +242,7 @@ export class RoomManager {
     if (!connection?.room.game) return { ok: false, error: "invalid-session" };
     const { room, participant } = connection;
     const game = room.game!;
+    if (game.state.currentRound === 3) return { ok: false, error: "round-not-ready" };
     const route = game.route;
     const character = game.state.characters.find(c => c.id === participant.characterId);
     if (!character || !isAlive(character)) return { ok: false, error: "not-authorized" };
@@ -238,14 +263,17 @@ export class RoomManager {
           const outcome = route.voting!.selectedOption();
           if (outcome && !route.result) route.result = { decisionId: route.voting!.publicView().decisionId, outcome: outcome as RouteId | "NO_AGREEMENT" };
           if (route.result && !game.state.roundTwo?.movement) {
-            const movement = resolveRoundTwoMovement(game.state, { ...route.result, ventilationRevealed: route.revealed }, this.routeRandom);
-            if (movement.ok) {
-              game.state = movement.state;
-              const snapshot = this.suppliesView(room.code)!;
-              game.roundTwoAfterRoute = { characters: snapshot.characters, inventory: snapshot.inventory };
-            }
-            else game.state = { ...game.state, roundTwo: { ...game.state.roundTwo!,
-              movement: { status: "blocked", decisionId: route.result.decisionId, error: movement.error } } };
+            game.resolvingMovement = true;
+            try {
+              const movement = resolveRoundTwoMovement(game.state, { ...route.result, ventilationRevealed: route.revealed }, this.routeRandom);
+              if (movement.ok) {
+                game.state = movement.state;
+                const snapshot = this.suppliesView(room.code)!;
+                game.roundTwoAfterRoute = { characters: snapshot.characters, inventory: snapshot.inventory };
+              }
+              else game.state = { ...game.state, roundTwo: { ...game.state.roundTwo!,
+                movement: { status: "blocked", decisionId: route.result.decisionId, error: movement.error } } };
+            } finally { game.resolvingMovement = false; }
           }
           this.onVotingChanged(room.code);
         }, 2, options.filter(o => !o.blocked).map(o => ({ id: o.id, label: o.name })));
@@ -254,10 +282,95 @@ export class RoomManager {
     return { ok: true };
   }
 
+  private roundThreeOptions(): RoundThreeView["options"] {
+    return publicRoundThreeRouteViews().map(route => ({ ...route,
+      name: route.id === "pipe-gallery" ? "Galería de tuberías y calderas" : route.id === "metal-debris" ? "Escombros metálicos y almacén" : route.name,
+      description: route.id === "fire-door" ? "Paso por una puerta cortafuegos."
+        : route.id === "pipe-gallery" ? "Paso por la zona de tuberías y calderas." : "Paso entre escombros metálicos hacia el almacén." }));
+  }
+
+  roundThreeAction(socketId: string, action: "advance" | "open"): RouteActionReply {
+    const connection = this.connections.get(socketId);
+    if (!connection?.room.game) return { ok: false, error: "invalid-session" };
+    const { room, participant } = connection;
+    const game = room.game!;
+    if (participant.id !== room.creatorId) return { ok: false, error: "not-creator" };
+    const actor = game.state.characters.find(c => c.id === participant.characterId);
+    if (!actor || !isAlive(actor)) return { ok: false, error: "not-authorized" };
+    if (action === "advance") {
+      if (game.state.currentRound === 3 && game.roundThree) return { ok: true };
+      const next = beginRoundThree(game.state);
+      if (next === game.state) return { ok: false, error: "round-not-ready" };
+      game.roundTwoSummary = this.roundTwoView(room.code)!;
+      game.voting.dispose(); game.route?.voting?.dispose();
+      game.state = next;
+      game.roundThree = { preparationId: newId(), selection: null, earthquake: false, blockedRoutes: [] };
+    } else {
+      const stage = game.roundThree;
+      if (game.state.currentRound !== 3 || !stage) return { ok: false, error: "round-not-ready" };
+      if (stage.voting) return { ok: true };
+      stage.voting = new RoomVoting(room.participants.map(player => ({ participantId: player.id,
+        alive: game.state.characters.some(c => c.id === player.characterId && isAlive(c)) })), this.clock, () => {
+          const outcome = stage.voting!.selectedOption();
+          if (outcome && !stage.selection) {
+            stage.selection = { decisionId: stage.voting!.publicView().decisionId, outcome: outcome as RoundThreeRouteId | "NO_AGREEMENT" };
+            if (outcome === "NO_AGREEMENT") {
+              stage.earthquake = true;
+              stage.blockedRoutes = ["fire-door", "metal-debris"];
+            }
+          }
+          if (stage.selection && !game.state.roundThreeRoute) {
+            game.resolvingMovement = true;
+            try {
+              const resolved = resolveRoundThreeChoice(game.state, stage.selection, this.routeRandom);
+              game.state = resolved.state; // También se conserva el bloqueo de 7A para no repetir tiradas.
+              if (resolved.ok) {
+                const current = this.suppliesView(room.code)!;
+                stage.afterRoute = { characters: current.characters, inventory: current.inventory, crowbar: game.state.tools.crowbar };
+              }
+            } finally { game.resolvingMovement = false; }
+          }
+          this.onVotingChanged(room.code);
+        }, 3, this.roundThreeOptions().map(route => ({ id: route.id, label: route.name })));
+    }
+    this.onVotingChanged(room.code);
+    return { ok: true };
+  }
+
+  roundThreeView(code: string): RoundThreeView | null {
+    const room = this.rooms.get(code);
+    const game = room?.game;
+    const stage = game?.roundThree;
+    if (!room || !game || !stage) return null;
+    const resolution = game.state.roundThreeRoute;
+    const forced = stage.earthquake;
+    const people = (ids: readonly string[], damage: number) => ids.map(id => {
+      const player = room.participants.find(p => p.characterId === id)!;
+      return { participantId: player.id, name: player.name, damage };
+    });
+    const result = resolution?.status === "completed" ? resolution.outcome : null;
+    return { round: 3, phase: result ? "completed" : resolution ? "blocked" : stage.voting ? "voting" : "preparation",
+      options: this.roundThreeOptions(), vote: stage.voting?.publicView() ?? null,
+      selection: stage.selection ? { ...stage.selection } : null, forced, earthquake: forced,
+      blockedRoutes: [...stage.blockedRoutes],
+      movement: result ? { routeId: result.routeId, energyCost: result.energyCost, accident: result.accident,
+        victims: people(result.victimIds, result.accidentDamage), environment: people(result.environmentalVictimIds, result.environmentalDamage),
+        gained: { ...result.gained }, crowbarLost: result.crowbarLost, returnBlocked: result.returnBlocked, discovery: result.discovery } : null,
+      blocked: resolution?.status === "blocked" ? resolution.error : null,
+      afterRoute: stage.afterRoute ? structuredClone(stage.afterRoute) : null,
+      previousNpcs: [{ round: 1, status: game.state.roundOne!.npc }, { round: 2, status: game.state.roundTwo!.resolution!.npc }] };
+  }
+
+  roundThreeSession(socketId: string): RoundThreeView | null {
+    const connection = this.connections.get(socketId);
+    return connection ? this.roundThreeView(connection.room.code) : null;
+  }
+
   roundTwoView(code: string): RoundTwoView | null {
     const room = this.rooms.get(code);
     const game = room?.game;
     const round = game?.state.roundTwo;
+    if (game?.roundTwoSummary) return structuredClone(game.roundTwoSummary);
     if (!room || !game || !round) return null;
     const resolution = round.resolution;
     const movement = round.movement;
@@ -279,7 +392,7 @@ export class RoomManager {
       inventory: { ...(game.roundTwoAfterRoute?.inventory ?? game.state.inventory) },
       characters: game.roundTwoAfterRoute ? structuredClone(game.roundTwoAfterRoute.characters) : room.participants.map((participant) => {
         const character = game.state.characters.find((entry) => entry.id === participant.characterId)!;
-        return { participantId: participant.id, name: participant.name, health: character.health, energy: character.energy };
+        return { participantId: participant.id, name: participant.name, health: character.health, energy: character.energy, ...(character.eliminated ? { eliminated: true } : {}) };
       }) };
   }
 
@@ -300,7 +413,7 @@ export class RoomManager {
       inventory: { ...game.state.inventory },
       characters: room.participants.map((participant) => {
         const character = game.state.characters.find((entry) => entry.id === participant.characterId)!;
-        return { participantId: participant.id, name: participant.name, health: character.health, energy: character.energy };
+        return { participantId: participant.id, name: participant.name, health: character.health, energy: character.energy, ...(character.eliminated ? { eliminated: true } : {}) };
       }) };
   }
 
@@ -314,18 +427,70 @@ export class RoomManager {
     const game = room?.game;
     if (!room || !game) return null;
     const movement = game.state.roundTwo?.movement;
-    const windowId = game.state.currentRound === 1 ? game.state.roundOne?.decisionId ?? null
-      : movement?.status === "completed" ? movement.decisionId : null;
+    const windowId = game.resolvingMovement ? null : game.state.currentRound === 1 ? game.state.roundOne?.decisionId ?? null
+      : game.state.currentRound === 2 ? movement?.status === "completed" ? movement.decisionId
+        : game.route && !game.route.voting ? game.route.preparationId : null
+      : game.state.roundThreeRoute?.status === "completed" ? game.state.roundThreeRoute.outcome.requestId
+        : game.roundThree && !game.roundThree.voting ? game.roundThree.preparationId : null;
     return { gameId: game.id, round: game.state.currentRound, windowId,
+      ...(game.state.currentRound === 1 && game.roundOneBlocked ? { movementBlocked: game.roundOneBlocked } : {}),
       inventory: { ...game.state.inventory }, characters: room.participants.map(participant => {
         const character = game.state.characters.find(c => c.id === participant.characterId)!;
-        return { participantId: participant.id, name: participant.name, health: character.health, energy: character.energy };
+        return { participantId: participant.id, name: participant.name, health: character.health, energy: character.energy, ...(character.eliminated ? { eliminated: true } : {}) };
       }) };
   }
 
   suppliesSession(socketId: string): SuppliesView | null {
     const connection = this.connections.get(socketId);
     return connection ? this.suppliesView(connection.room.code) : null;
+  }
+
+  medicalView(code: string): MedicalView | null {
+    const room = this.rooms.get(code);
+    const current = this.suppliesView(code);
+    if (!room?.game || !current) return null;
+    return { gameId: current.gameId, round: current.round, characters: current.characters, inventory: current.inventory,
+      treatments: (room.game.state.medicalTreatments ?? []).map(treatment => ({ round: treatment.round,
+        participantId: room.participants.find(player => player.characterId === treatment.characterId)!.id,
+        healthRestored: treatment.healthRestored })) };
+  }
+
+  medicalSession(socketId: string): MedicalView | null {
+    const connection = this.connections.get(socketId);
+    return connection ? this.medicalView(connection.room.code) : null;
+  }
+
+  treat(socketId: string, input: unknown): TreatmentReply {
+    const connection = this.connections.get(socketId);
+    if (!connection?.room.game) return { ok: false, error: "invalid-session" };
+    const { room, participant } = connection;
+    const game = room.game!;
+    const actor = game.state.characters.find(c => c.id === participant.characterId);
+    if (!actor || actor.role !== "medic") return { ok: false, error: "not-authorized" };
+    if (!isAlive(actor)) return { ok: false, error: "medic-dead" };
+    if (!input || typeof input !== "object" || Object.keys(input).sort().join(",") !== "gameId,requestId,round,targetParticipantId") return { ok: false, error: "invalid-input" };
+    const candidate = input as TreatmentInput;
+    if ([candidate.requestId, candidate.gameId, candidate.targetParticipantId].some(value =>
+      typeof value !== "string" || !/^[a-zA-Z0-9-]{1,100}$/.test(value))
+      || (candidate.round !== 1 && candidate.round !== 2 && candidate.round !== 3)) return { ok: false, error: "invalid-input" };
+    if (candidate.gameId !== game.id) return { ok: false, error: "wrong-game" };
+    const previous = game.treatmentRequests.get(candidate.requestId);
+    if (previous) {
+      if (previous.actorId !== participant.id || previous.targetParticipantId !== candidate.targetParticipantId
+        || previous.round !== candidate.round) return { ok: false, error: "request-conflict" };
+      return { ok: true, requestId: candidate.requestId };
+    }
+    // La ronda actual admite tratamiento antes y después de la ruta. Su resolución es síncrona.
+    if (candidate.round !== game.state.currentRound) return { ok: false, error: "wrong-round" };
+    const target = room.participants.find(player => player.id === candidate.targetParticipantId);
+    if (!target?.characterId) return { ok: false, error: "target-not-found" };
+    const treatment = administerTreatment(game.state, target.characterId);
+    if (!treatment.ok) return { ok: false, error: treatment.error };
+    // Una sola confirmación síncrona para salud, inventario, límite y recibo.
+    game.state = treatment.state;
+    game.treatmentRequests.set(candidate.requestId, { ...candidate, actorId: participant.id });
+    this.onSuppliesChanged(room.code);
+    return { ok: true, requestId: candidate.requestId };
   }
 
   givePack(socketId: string, input: unknown): PackReply {

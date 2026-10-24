@@ -23,6 +23,9 @@ export interface RouteChoiceView {
 }
 
 export interface ClientToServerEvents {
+  "round-three:advance": (ack: (reply: RouteActionReply) => void) => void;
+  "round-three:open": (ack: (reply: RouteActionReply) => void) => void;
+  "medical:treat": (input: TreatmentInput, ack: (reply: TreatmentReply) => void) => void;
   "pack:give": (input: PackInput, ack: (reply: PackReply) => void) => void;
   "route:reveal": (ack: (reply: RouteActionReply) => void) => void;
   "route:open": (ack: (reply: RouteActionReply) => void) => void;
@@ -36,6 +39,9 @@ export interface ClientToServerEvents {
 }
 
 export interface ServerToClientEvents {
+  "game:role-unavailable": () => void;
+  "round-three:updated": (state: RoundThreeView) => void;
+  "medical:updated": (state: MedicalView) => void;
   "supplies:updated": (state: SuppliesView) => void;
   "round-two:updated": (state: RoundTwoView) => void;
   "round:completed": (summary: RoundOneSummary) => void;
@@ -99,7 +105,7 @@ export interface OwnVote { decisionId: string; attemptId: string; optionId: stri
 export interface PublicVote {
   decisionId: string;
   attemptId: string;
-  round: 1 | 2;
+  round: 1 | 2 | 3;
   attemptNumber: number;
   deadline: number;
   serverNow: number;
@@ -110,12 +116,22 @@ export interface PublicVote {
 export type VoteReply = { ok: true; own: OwnVote } | { ok: false; error: string };
 
 export interface PackInput { requestId: string; windowId: string; targetParticipantId: string }
+export interface TreatmentInput { requestId: string; gameId: string; round: 1 | 2 | 3; targetParticipantId: string }
+export type TreatmentReply = { ok: true; requestId: string } | { ok: false; error: string };
+export interface MedicalView {
+  gameId: string;
+  round: 1 | 2 | 3;
+  characters: RoundOneSummary["characters"];
+  inventory: RoundOneSummary["inventory"];
+  treatments: { round: 1 | 2 | 3; participantId: string; healthRestored: number }[];
+}
 export type PackReply = { ok: true; requestId: string } | { ok: false; error: string };
 /** Estado actual público, separado de las instantáneas históricas al terminar rutas. */
 export interface SuppliesView {
   gameId: string;
-  round: 1 | 2;
+  round: 1 | 2 | 3;
   windowId: string | null;
+  movementBlocked?: string;
   characters: RoundOneSummary["characters"];
   inventory: RoundOneSummary["inventory"];
 }
@@ -131,7 +147,7 @@ export interface RoundOneSummary {
   npc: "rescued" | "abandoned";
   microearthquake: boolean;
   costs: { rescueEnergy: number; movementEnergy: number; damage: number };
-  characters: { participantId: string; name: string; health: number; energy: number }[];
+  characters: { participantId: string; name: string; health: number; energy: number; eliminated?: boolean }[];
   inventory: { packs: number; medicalUnits: number };
 }
 
@@ -153,4 +169,27 @@ export interface RoundTwoView {
   characters: RoundOneSummary["characters"];
   inventory: RoundOneSummary["inventory"];
   previousNpc: RoundOneSummary["npc"];
+}
+
+export type RoundThreeRouteId = "fire-door" | "pipe-gallery" | "metal-debris";
+export interface RoundThreeView {
+  round: 3;
+  phase: "preparation" | "voting" | "completed" | "blocked";
+  options: { id: RoundThreeRouteId; name: string; description: string; energyCost: number }[];
+  vote: PublicVote | null;
+  selection: { decisionId: string; outcome: RoundThreeRouteId | "NO_AGREEMENT" } | null;
+  forced: boolean;
+  earthquake: boolean;
+  blockedRoutes: RoundThreeRouteId[];
+  movement: {
+    routeId: RoundThreeRouteId; energyCost: number; accident: boolean;
+    victims: { participantId: string; name: string; damage: number }[];
+    environment: { participantId: string; name: string; damage: number }[];
+    gained: RoundOneSummary["inventory"];
+    crowbarLost: boolean; returnBlocked: boolean;
+    discovery: "medical-conference-room" | "supply-warehouse" | null;
+  } | null;
+  blocked: string | null;
+  afterRoute: { characters: RoundOneSummary["characters"]; inventory: RoundOneSummary["inventory"]; crowbar: "available" | "lost" } | null;
+  previousNpcs: { round: 1 | 2; status: "rescued" | "abandoned" }[];
 }

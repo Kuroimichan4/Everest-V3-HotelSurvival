@@ -86,7 +86,19 @@ test.each(["insufficient-energy", "single-survivor-pending", "no-living-characte
   if (error === "invalid-random") random.mockReturnValue(NaN);
   const snapshot = structuredClone(state);
   const result = resolveRoundTwoMovement(state, choice(route), random);
-  expect(result).toEqual({ ok: false, state, error });
+  if (["single-survivor-pending", "fatal-microearthquake-order-pending", "fatal-accident-order-pending"].includes(error)) {
+    expect(result.ok).toBe(true);
+    const expectedHealth = error === "single-survivor-pending" ? [70, 0, 0, 0]
+      : error === "fatal-microearthquake-order-pending" ? [0, 0, 0, 0] : [0, 0, 20, 20];
+    expect(result.state.characters.map(c => c.health)).toEqual(expectedHealth);
+    expect(result.state.roundTwo?.movement?.status).toBe("completed");
+    expect(state).toEqual(snapshot);
+    const calls = random.mock.calls.length;
+    resolveRoundTwoMovement(result.state, choice(route), random);
+    expect(random).toHaveBeenCalledTimes(calls);
+    return;
+  }
+  expect(result).toEqual({ ok: false, state, error: error === "insufficient-energy" ? "transport-vote-pending" : error });
   expect(result.state).toBe(state);
   expect(state).toEqual(snapshot);
   expect(state.roundTwo?.movement).toBeUndefined();

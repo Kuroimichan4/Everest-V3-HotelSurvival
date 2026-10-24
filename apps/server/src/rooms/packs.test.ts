@@ -8,7 +8,7 @@ const managers: RoomManager[] = [];
 afterEach(() => { for (const manager of managers.splice(0)) manager.dispose(); });
 function value<T>(reply: RoomReply<T>): T { if (!reply.ok) throw new Error(reply.error); return reply.value; }
 function setup(random = () => 0.99) {
-  const manager = new RoomManager(() => 0, undefined, random);
+  const manager = new RoomManager(() => 0, { now: () => 1000, schedule: () => () => {} }, random);
   managers.push(manager);
   const first = value(manager.create("s0", "Player 0"));
   const sessions = [first, ...[1, 2, 3].map(i => value(manager.join(`s${i}`, `Player ${i}`, first.room.code)))];
@@ -107,7 +107,7 @@ test("recursos actuales pasan a ronda 2 sin modificar la historia ni reabrir ven
   expect(f.give({ ...firstRequest, requestId: randomUUID() })).toEqual({ ok: false, error: "supplies-not-open" });
   expect(f.give(firstRequest).ok).toBe(true); // Solo confirma el recibo, nunca aplica otro pack.
   f.finishVote("rescue");
-  expect(f.give()).toEqual({ ok: false, error: "supplies-not-open" });
+  expect(f.give({ ...f.input(), windowId: firstRequest.windowId })).toEqual({ ok: false, error: "supplies-not-open" });
   expect(f.manager.routeAction("s0", "open").ok).toBe(true);
   expect(f.give()).toEqual({ ok: false, error: "supplies-not-open" });
   f.finishVote("unstable-corridor");
@@ -136,4 +136,15 @@ test("no existe límite artificial de un pack por ronda y pueden agotarse todas 
   for (const i of [0, 1, 2, 3]) for (let count = 0; count < 2; count++) expect(f.give(f.input(i)).ok).toBe(true);
   expect(f.view().inventory.packs).toBe(0);
   expect(f.view().characters.every(c => c.energy === 100)).toBe(true);
+});
+
+
+test("8A: un eliminado con salud positiva no recibe packs ni recupera autoridad", () => {
+  const f = setup(); f.finishVote("rescue");
+  f.setState(state => ({ ...state, characters: state.characters.map((c, i) => i === 0 ? { ...c, eliminated: true } : c) }));
+  const before = f.view();
+  expect(f.give(f.input(0))).toEqual({ ok: false, error: "character-dead" });
+  expect(f.view()).toEqual(before);
+  expect(f.manager.privateRole("s0")).toBeNull();
+  expect(f.view().characters[0]!.eliminated).toBe(true);
 });
