@@ -1,3 +1,4 @@
+import { NPC_RESCUE_ENERGY } from "./energy-costs.js";
 import type { RescueOutcome } from "@everest/shared";
 import { applyDamage, spendEnergy, type OperationResult } from "./operations.js";
 import { isAlive, type SimulationState } from "./state.js";
@@ -11,7 +12,7 @@ export function beginRoundTwo(state: SimulationState): SimulationState {
 /** Todos los humanos vivos participan, como en ronda 1. Transacción atómica. */
 export function resolveRoundTwo(state: SimulationState, decisionId: string, result: RescueOutcome): OperationResult {
   if (!state.roundTwo || state.roundTwo.resolution) return { ok: true, state };
-  const costs = { rescueEnergy: result === "RESCUE_APPROVED" ? 25 : 0,
+  const costs = { rescueEnergy: result === "RESCUE_APPROVED" ? NPC_RESCUE_ENERGY : 0,
     movementEnergy: 0, damage: result === "NO_AGREEMENT" ? 10 : 0 };
   let next = state;
   for (const character of state.characters.filter(isAlive)) {

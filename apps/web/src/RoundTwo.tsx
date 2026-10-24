@@ -1,69 +1,29 @@
-import { useEffect, useState } from "react";
 import type { RoundTwoView, PublicVote, OwnVote } from "@everest/shared";
 import { RoundOne } from "./RoundOne";
-
-export function RoundTwo({ state, vote, own, enabled, busy, onVote, maintenance, creator, onRouteAction }: {
-  maintenance: boolean; creator: boolean; onRouteAction: (action: "reveal" | "open") => void;
-  state: RoundTwoView; vote: PublicVote; own: OwnVote | null;
-  enabled: boolean; busy: boolean; onVote: (option: string) => void;
+import { VotePanel } from "./VotePanel";
+import { RouteAvailabilityNotice, RouteRecoveryPanel } from "./RouteAvailability";
+import { reasonLabel } from "./game-state";
+export function RoundTwo({ state, vote, own, enabled, busy, onVote, maintenance, creator, onRouteAction, onRetry }: {
+  onRetry?: (decisionId: string) => void; maintenance: boolean; creator: boolean; onRouteAction: (action: "reveal" | "open") => void;
+  state: RoundTwoView; vote: PublicVote; own: OwnVote | null; enabled: boolean; busy: boolean; onVote: (option: string) => void;
 }) {
+  if (state.phase === "rescue-vote") return <RoundOne summary={null} vote={vote} own={own} enabled={enabled} busy={busy} onVote={onVote} />;
   const route = state.routeChoice;
-  const routeVote = route?.vote;
-  const [remaining, setRemaining] = useState(0);
-  useEffect(() => {
-    if (!routeVote) return;
-    const received = performance.now();
-    const update = () => setRemaining(Math.max(0, Math.ceil((routeVote.deadline - routeVote.serverNow - (performance.now() - received)) / 1000)));
-    update();
-    const timer = setInterval(update, 250);
-    return () => clearInterval(timer);
-  }, [routeVote]);
-  const ownOption = routeVote && own?.decisionId === routeVote.decisionId && own.attemptId === routeVote.attemptId ? own.optionId : null;
-  return <section>
-    {state.phase === "rescue-vote" ? <RoundOne summary={null} vote={vote} own={own} enabled={enabled} busy={busy} onVote={onVote} /> : <>
-      <h3>{state.phase === "completed" ? "Ronda 2 completada" : "Ronda 2"}</h3>
-      <p role="status">Resultado: {state.result}. Segundo NPC: {state.npc === "rescued" ? "rescatado" : state.npc === "abandoned" ? "abandonado" : "pendiente"}.</p>
-      <p>Microterremoto por rescate: {state.microearthquake ? "sí" : "no"}.</p>
-      {state.blocked ? <p role="alert">Energía insuficiente. Resolución bloqueada sin aplicar costes. Pendiente decidir cómo recuperar energía para este rescate.</p>
-        : !state.movement && <p>Rescate resuelto. Preparación y elección de ruta.</p>}
+  const description = (id: string) => id === "ventilation" ? "Paso por los conductos revelados al equipo." : id === "shoring" ? "Despejar escombros y apuntalar el paso." : "Continuar por el pasillo principal.";
+  return <section aria-label="Elección de ruta de ronda 2">
+    <p className="eyebrow">PASILLO PRINCIPAL</p><h2>{route?.phase === "voting" ? "Elegid un camino" : "Preparad la siguiente ruta"}</h2>
+    {state.blocked && <p role="alert">{reasonLabel(state.blocked)}</p>}
+    <RouteRecoveryPanel recovery={state.recovery} enabled={enabled} busy={busy} onRetry={onRetry} />
+    {route?.phase === "preparation" && <>
+      <p className="action-description">Compartid la información que decidáis revelar y preparad la energía del equipo.</p>
+      <div className="action-buttons">{maintenance && !route.ventilationRevealed && <button className="secondary" disabled={!enabled || busy} onClick={() => onRouteAction("reveal")}>Revelar conductos de ventilación</button>}
+        {creator && <button disabled={!enabled || busy || route.options.every(o => o.blocked)} onClick={() => onRouteAction("open")}>Abrir votación de ruta</button>}</div>
+      {!creator && <p className="muted">El anfitrión abrirá la votación cuando el equipo esté preparado.</p>}
+      {route.options.every(o => o.blocked) && <p role="status">No hay rutas disponibles. Botones puede repartir packs para revisar las opciones.</p>}
     </>}
-    {route && <section aria-label="Elección de ruta">
-      <h3>Elección de ruta</h3>
-      {route.phase === "preparation" && <>
-        <p>Preparación sin límite de tiempo. Política provisional: el creador abre la votación cuando termine la conversación. Las opciones quedan fijadas al abrirla y ya no se pueden revelar rutas.</p>
-        {maintenance && !route.ventilationRevealed && <button disabled={!enabled || busy} onClick={() => onRouteAction("reveal")}>Revelar conductos de ventilación</button>}
-        {creator && <button disabled={!enabled || busy} onClick={() => onRouteAction("open")}>Abrir votación de ruta</button>}
-      </>}
-      {route.ventilationRevealed && <p>Se ha revelado públicamente la existencia de los conductos de ventilación.</p>}
-      {routeVote && route.phase === "voting" && <p>Intento {routeVote.attemptNumber}. Mayoría: {routeVote.requiredVotes}. Tiempo restante: {remaining} s.</p>}
-      <ul>{route.options.map(option => <li key={option.id}>
-        {option.name}: {option.energyCost} de energía por persona al desplazarse.
-        {option.blocked && <span> Pendiente de definir la disponibilidad con los supervivientes actuales.</span>}
-        {route.phase === "voting" && <button disabled={!enabled || busy || !!option.blocked || !!ownOption || !remaining || routeVote?.status !== "open"} onClick={() => onVote(option.id)}>Votar {option.name}</button>}
-      </li>)}</ul>
-      {ownOption && <p role="status">Tu voto: {route.options.find(o => o.id === ownOption)?.name}.</p>}
-      {route.result && <p role="status">Resultado de la votación de ruta: {route.result.outcome === "NO_AGREEMENT" ? "NO_AGREEMENT" : route.options.find(o => o.id === route.result?.outcome)?.name}.</p>}
-    </section>}
-    {state.movement?.status === "blocked" && <p role="alert">
-      Desplazamiento bloqueado. No se han aplicado costes ni daños de esta resolución y la ronda sigue pendiente.
-      {state.movement.reason === "transport-vote-pending" ? " Hay compañeros que necesitan transporte. Pendiente la votación de la fase 8B, sin eliminar a nadie automáticamente."
-        : state.movement.reason === "insufficient-energy" ? " Falta energía para completar la ruta."
-        : state.movement.reason === "no-living-characters" ? " No quedan humanos vivos; el desenlace está pendiente de definición."
-        : state.movement.reason === "specialist-availability-pending" ? " Falta definir la disponibilidad sin los especialistas necesarios."
-        : " Hay un caso pendiente de definición o validación. Se necesita revisión antes de continuar."}
-    </p>}
-    {state.movement?.status === "completed" && <section aria-label="Resumen del desplazamiento">
-      <p>Ruta utilizada: {state.movement.routeName}. Desplazamiento forzoso: {state.movement.forced ? "sí" : "no"}.</p>
-      <p>Coste de desplazamiento por humano: {state.movement.energyCost} de energía.</p>
-      <p>Microterremoto por falta de acuerdo en la ruta: {state.movement.microearthquake ? "sí, −10 de salud por humano vivo" : "no"}.</p>
-      <p>Accidente: {state.movement.accident ? "sí" : "no"}.</p>
-      {state.movement.victims.length > 0 && <ul>{state.movement.victims.map(victim =>
-        <li key={victim.participantId}>{victim.name}: −{victim.damage} de salud por accidente.</li>)}</ul>}
-    </section>}
-    <h4>{state.phase === "completed" ? "Estado al terminar la ruta (histórico)" : "Situación de la ronda"}</h4>
-    <table><thead><tr><th>Participante</th><th>Salud</th><th>Energía</th></tr></thead>
-      <tbody>{state.characters.map(c => <tr key={c.participantId}><td>{c.name}</td><td>{c.health}</td><td>{c.energy}</td></tr>)}</tbody></table>
-    <p>{state.phase === "completed" ? "Inventario al terminar la ruta: " : "Inventario: "}{state.inventory.packs} packs y {state.inventory.medicalUnits} unidades médicas.</p>
-    <p>NPC de ronda 1: {state.previousNpc === "rescued" ? "rescatado" : "abandonado"}.</p>
+    {route?.phase === "voting" && route.vote ? <VotePanel title="Votación de ruta" vote={route.vote} own={own} enabled={enabled} busy={busy} onVote={onVote}
+      options={route.options.map(o => ({ id: o.id, label: o.name, disabled: !!o.blocked, detail: <><p>{description(o.id)}</p><span className="cost-badge">−{o.energyCost} energía</span><RouteAvailabilityNotice value={o.availability} /></> }))} />
+      : route && <div className="option-grid">{route.options.map(o => <article key={o.id} className={`option-card ${o.blocked ? "unavailable" : ""}`}><h4>{o.name}</h4><p>{description(o.id)}</p><span className="cost-badge">−{o.energyCost} energía</span><RouteAvailabilityNotice value={o.availability} /></article>)}</div>}
+    {!state.recovery && state.movement?.status === "blocked" && <p role="alert">{reasonLabel(state.movement.reason)}</p>}
   </section>;
 }

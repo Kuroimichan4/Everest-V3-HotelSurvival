@@ -1,3 +1,4 @@
+import type { TransportPlan } from "./transport.js";
 import type { SimulationState } from "./state.js";
 import { resolveRoundThreeRoute, type RoundThreeRouteId } from "./round-three-routes.js";
 import type { RandomSource } from "./routes.js";
@@ -9,7 +10,7 @@ export function beginRoundThree(state: SimulationState): SimulationState {
 
 /** El terremoto bloquea alternativas, sin daño directo. La galería mantiene sus efectos normales. */
 export function resolveRoundThreeChoice(state: SimulationState,
-  selection: { decisionId: string; outcome: RoundThreeRouteId | "NO_AGREEMENT" }, random: RandomSource) {
+  selection: { decisionId: string; outcome: RoundThreeRouteId | "NO_AGREEMENT" }, random: RandomSource, plan?: TransportPlan) {
   return resolveRoundThreeRoute(state, selection.decisionId,
-    selection.outcome === "NO_AGREEMENT" ? "pipe-gallery" : selection.outcome, random);
+    selection.outcome === "NO_AGREEMENT" ? "pipe-gallery" : selection.outcome, random, plan);
 }

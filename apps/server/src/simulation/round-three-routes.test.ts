@@ -7,9 +7,9 @@ import { resolveRoundTwoMovement } from "./round-two-movement.js";
 import { privateRoundThreeKnowledge, publicRoundThreeRouteViews, resolveRoundThreeRoute, roundThreeExplorationView } from "./round-three-routes.js";
 
 const routes = [
-  ["fire-door", 20, 0.2, 10, 0],
-  ["pipe-gallery", 10, 0.5, 30, 20],
-  ["metal-debris", 30, 0.2, 10, 0],
+  ["fire-door", 30, 0.2, 10, 0],
+  ["pipe-gallery", 20, 0.5, 30, 20],
+  ["metal-debris", 40, 0.2, 10, 0],
 ] as const;
 
 test.each(routes)("%s: coste %i, umbral %f, accidente %i y ambiente %i", (route, cost, probability, damage, environment) => {
@@ -137,7 +137,7 @@ test.each([0, 1])("con %i humanos vivos el caso queda bloqueado antes de pagar o
   if (living === 1) {
     const result = resolveRoundThreeRoute(state, "r3", "pipe-gallery", random);
     expect(result.ok).toBe(true);
-    expect(result.state.characters[0]).toMatchObject({ health: 80, energy: 90 });
+      expect(result.state.characters[0]).toMatchObject({ health: 80, energy: 80 });
     expect(random).toHaveBeenCalledTimes(1);
   } else {
     expectBlocked(state, "pipe-gallery", "no-living-characters", random);
@@ -153,7 +153,7 @@ test.each([2, 3])("con %i humanos vivos se seleccionan dos distintos y solo paga
   if (!result.ok) throw new Error(result.error);
   expect(result.outcome.victimIds).toEqual(initial.characters.slice(0, 2).map(c => c.id));
   expect(result.outcome.environmentalVictimIds).toHaveLength(living);
-  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual(initial.characters.map((_, i) => [i < 2 ? 50 : i < living ? 80 : 0, i < living ? 90 : 100]));
+  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual(initial.characters.map((_, i) => [i < 2 ? 50 : i < living ? 80 : 0, i < living ? 80 : 100]));
 });
 
 test.each([20, 30, 50])("8A: danos acumulados mortales con salud %i se confirman juntos", health => {
@@ -200,7 +200,7 @@ test("vistas públicas sin destinos, premios, probabilidades ni conocimientos de
   resultView.gained.medicalUnits = 999;
   views[0]!.energyCost = 999;
   expect(roundThreeExplorationView(completed.state)!.gained.medicalUnits).toBe(2);
-  expect(publicRoundThreeRouteViews()[0]!.energyCost).toBe(20);
+  expect(publicRoundThreeRouteViews()[0]!.energyCost).toBe(30);
 });
 
 test("se conservan recursos, palanca e historial de rondas anteriores y tratamientos", () => {
@@ -208,16 +208,16 @@ test("se conservan recursos, palanca e historial de rondas anteriores y tratamie
   state = resolveRoundTwo(beginRoundTwo(state), "r2", "RESCUE_APPROVED").state;
   state = resolveRoundTwoMovement(state, { decisionId: "r2-route", outcome: "unstable-corridor", ventilationRevealed: false }, () => 0).state;
   state = administerTreatment(state, state.characters[0]!.id).state;
-  for (const character of state.characters) state = consumePack(state, character.id).state;
-  expect(state.inventory).toEqual({ packs: 4, medicalUnits: 3 });
+  for (const character of state.characters) for (let count = 0; count < 2; count++) state = consumePack(state, character.id).state;
+  expect(state.inventory).toEqual({ packs: 0, medicalUnits: 3 });
   const snapshot = structuredClone(state);
   const result = resolveRoundThreeRoute(state, "r3", "metal-debris", () => 0.99);
   expect(result.ok).toBe(true);
-  expect(result.state.inventory).toEqual({ packs: 12, medicalUnits: 3 });
+  expect(result.state.inventory).toEqual({ packs: 8, medicalUnits: 3 });
   expect(result.state.roundOne).toBe(state.roundOne);
   expect(result.state.roundTwo).toBe(state.roundTwo);
   expect(result.state.medicalTreatments).toBe(state.medicalTreatments);
   expect(result.state.tools).toBe(state.tools);
-  expect(result.state.characters.map(c => c.energy)).toEqual([20, 20, 20, 20]);
+  expect(result.state.characters.map(c => c.energy)).toEqual([15, 15, 15, 15]);
   expect(state).toEqual(snapshot);
 });

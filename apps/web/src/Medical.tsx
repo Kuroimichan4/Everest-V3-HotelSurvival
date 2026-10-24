@@ -7,12 +7,13 @@ function storedRequest(key: string): TreatmentInput | null {
     if (!raw) return null;
     const input = JSON.parse(raw) as Partial<TreatmentInput> | null;
     return input && typeof input.requestId === "string" && typeof input.gameId === "string"
-      && (input.round === 1 || input.round === 2 || input.round === 3) && typeof input.targetParticipantId === "string" ? input as TreatmentInput : null;
+      && (input.round === 1 || input.round === 2 || input.round === 3 || input.round === 4) && typeof input.targetParticipantId === "string" ? input as TreatmentInput : null;
   } catch { return null; }
 }
 const errors: Record<string, string> = {
+  "supplies-not-open": "Los tratamientos de ronda 4 están disponibles durante la preparación, antes de evacuar.",
   "no-medical-units": "No quedan unidades médicas disponibles.",
-  "health-full-pending": "Salud completa: regla pendiente de decisión. Se rechaza por seguridad sin consumir recursos.",
+  "health-full-pending": "El paciente tiene la salud completa. No se ha consumido ninguna unidad.",
   "treatment-used": "Este personaje ya recibió su unidad médica en esta ronda.",
   "character-dead": "No se puede tratar a un personaje fallecido.",
   "medic-dead": "El Médico ha fallecido. Su sustitución está pendiente; no se transfiere su autoridad.",
@@ -23,8 +24,8 @@ const errors: Record<string, string> = {
   "request-conflict": "Este identificador ya corresponde a otro tratamiento.",
 };
 
-export function Medical({ state, medic, enabled, onTreat }: {
-  state: MedicalView; medic: boolean; enabled: boolean;
+export function Medical({ state, medic, enabled, canTreat = true, onTreat }: {
+  state: MedicalView; medic: boolean; enabled: boolean; canTreat?: boolean;
   onTreat: (input: TreatmentInput, done: (reply: TreatmentReply | null) => void) => void;
 }) {
   const storageKey = `everest-medical-pending:${state.gameId}`;
@@ -35,10 +36,10 @@ export function Medical({ state, medic, enabled, onTreat }: {
   const [message, setMessage] = useState("");
   const treated = new Set(state.treatments.filter(t => t.round === state.round).map(t => t.participantId));
   const living = state.characters.filter(c => c.health > 0 && !c.eliminated);
-  const target = living.find(c => c.participantId === targetId) ?? living[0];
+  const target = living.find(c => c.participantId === targetId) ?? living.find(c => c.health < 100 && !treated.has(c.participantId)) ?? living[0];
 
   function send(input: TreatmentInput) {
-    if (!enabled || sending.current) return;
+    if (!medic || !enabled || sending.current) return;
     sending.current = true; setBusy(true); setMessage("");
     onTreat(input, reply => {
       sending.current = false; setBusy(false);
@@ -58,27 +59,27 @@ export function Medical({ state, medic, enabled, onTreat }: {
   }, [enabled, medic, storageKey]);
 
   function treat() {
-    if (!target || !enabled || busy || pending) return;
+    if (!medic || !target || !enabled || !canTreat || busy || pending || sending.current) return;
     const input: TreatmentInput = { requestId: crypto.randomUUID(), gameId: state.gameId, round: state.round, targetParticipantId: target.participantId };
     try { sessionStorage.setItem(storageKey, JSON.stringify(input)); }
     catch { setMessage("No se pudo guardar la solicitud pendiente. Habilita el almacenamiento de sesión antes de tratar."); return; }
-    setPending(input); send(input);
+    setTargetId(target.participantId); setPending(input); send(input);
   }
 
-  return <section aria-label="Tratamientos médicos">
-    <h3>Tratamientos médicos — ronda {state.round}</h3>
-    <p>Unidades médicas disponibles: {state.inventory.medicalUnits}. Máximo una por personaje y ronda.</p>
-    <ul>{state.characters.map(c => <li key={c.participantId}>{c.name}: {c.health} de salud.
-      {c.eliminated ? " Eliminado definitivamente." : c.health === 0 ? " Fallecido." : treated.has(c.participantId) ? " Ya recibió tratamiento en esta ronda." : " Sin tratamiento en esta ronda."}
-    </li>)}</ul>
+  useEffect(() => { if (!message) return; const timer = setTimeout(() => setMessage(""), 6500); return () => clearTimeout(timer); }, [message]);
+  if (!medic) return null;
+  return <section className="panel specialist-panel" aria-label="Tratamientos médicos">
+    <p className="eyebrow">MÉDICO</p><h3>Administrar tratamiento</h3>
+    <p>Unidades médicas disponibles: {state.inventory.medicalUnits}</p>
     {medic && <>
-      <label>Destinatario<select value={target?.participantId ?? ""} disabled={!enabled || busy || !!pending} onChange={event => setTargetId(event.target.value)}>
+      <label>Paciente<select value={target?.participantId ?? ""} disabled={!enabled || busy || !!pending} onChange={event => setTargetId(event.target.value)}>
         {living.map(c => <option key={c.participantId} value={c.participantId}>{c.name} — {c.health} de salud{treated.has(c.participantId) ? " (ya tratado)" : ""}</option>)}
       </select></label>
-      <button disabled={!enabled || busy || !!pending || !target || target.health >= 100 || treated.has(target.participantId) || state.inventory.medicalUnits === 0} onClick={treat}>Administrar tratamiento</button>
+      <button disabled={!enabled || !canTreat || busy || !!pending || !target || target.health >= 100 || treated.has(target.participantId) || state.inventory.medicalUnits === 0} onClick={treat}>Administrar tratamiento</button>
+      {!canTreat && <p className="muted">Los nuevos tratamientos están cerrados en esta fase. Puedes recuperar la confirmación de una solicitud pendiente.</p>}
       {state.inventory.medicalUnits === 0 && <p>No quedan unidades médicas.</p>}
       {target && treated.has(target.participantId) && <p>El destinatario ya recibió su unidad médica en esta ronda.</p>}
-      {target?.health === 100 && <p>Salud completa: regla pendiente de decisión. Por seguridad no se consume una unidad médica.</p>}
+      {target?.health === 100 && <p>El paciente tiene la salud completa.</p>}
     </>}
     {medic && pending && <button disabled={!enabled || busy} onClick={() => send(pending)}>Reintentar tratamiento pendiente</button>}
     {message && <p role="status">{message}</p>}

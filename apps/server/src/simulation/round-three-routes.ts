@@ -1,3 +1,5 @@
+import { MOVEMENT_ENERGY } from "./energy-costs.js";
+import type { TransportPlan } from "./transport.js";
 import { traverseRouteEffects, type RandomSource, type RouteEffects, type RouteError } from "./routes.js";
 import { isAlive, type HumanRole, type SimulationState } from "./state.js";
 
@@ -9,9 +11,9 @@ interface Definition extends RouteEffects {
 }
 // Exclusivo del backend. Las vistas públicas se proyectan sin copiar estas definiciones.
 const definitions: readonly Definition[] = [
-  { id: "fire-door", name: "Puerta cortafuegos", energyCost: 20, danger: "MODERATE", accidentProbability: 0.2, accidentDamage: 10 },
-  { id: "pipe-gallery", name: "Galería de tuberías", energyCost: 10, danger: "EXTREME", accidentProbability: 0.5, accidentDamage: 30 },
-  { id: "metal-debris", name: "Escombros metálicos", energyCost: 30, danger: "MODERATE", accidentProbability: 0.2, accidentDamage: 10 },
+  { id: "fire-door", name: "Puerta cortafuegos", energyCost: MOVEMENT_ENERGY["fire-door"], danger: "MODERATE", accidentProbability: 0.2, accidentDamage: 10 },
+  { id: "pipe-gallery", name: "Galería de tuberías", energyCost: MOVEMENT_ENERGY["pipe-gallery"], danger: "EXTREME", accidentProbability: 0.5, accidentDamage: 30 },
+  { id: "metal-debris", name: "Escombros metálicos", energyCost: MOVEMENT_ENERGY["metal-debris"], danger: "MODERATE", accidentProbability: 0.2, accidentDamage: 10 },
 ];
 export type RoundThreeRouteError = RouteError | "crowbar-unavailable-pending"
   | "round-three-already-resolved" | "invalid-request";
@@ -38,7 +40,7 @@ export type RoundThreeRouteResult =
   | { readonly ok: false; readonly state: SimulationState; readonly error: RoundThreeRouteError };
 
 /** Motor interno sin transición de ronda, votos ni conexiones. Una resolución por partida. */
-export function resolveRoundThreeRoute(state: SimulationState, requestId: string, routeId: string, random: RandomSource): RoundThreeRouteResult {
+export function resolveRoundThreeRoute(state: SimulationState, requestId: string, routeId: string, random: RandomSource, plan?: TransportPlan): RoundThreeRouteResult {
   const reject = (error: RoundThreeRouteError): RoundThreeRouteResult => ({ ok: false, state, error });
   if (typeof requestId !== "string" || !requestId.trim() || requestId.length > 100) return reject("invalid-request");
   const previous = state.roundThreeRoute;
@@ -57,7 +59,7 @@ export function resolveRoundThreeRoute(state: SimulationState, requestId: string
   const living = state.characters.filter(isAlive);
   if (!living.length) return block("no-living-characters");
   const environmentalDamage = route.id === "pipe-gallery" ? 20 : 0;
-  const traversal = traverseRouteEffects(state, { ...route, guaranteedDamage: environmentalDamage }, random);
+  const traversal = traverseRouteEffects(state, { ...route, guaranteedDamage: environmentalDamage }, random, plan);
   if (!traversal.ok) return block(traversal.error);
   const next = traversal.state;
   let packs = 0;

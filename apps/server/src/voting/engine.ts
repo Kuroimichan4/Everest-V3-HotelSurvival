@@ -75,12 +75,13 @@ export function checkDeadline(state: Decision, attemptId: string, now: number): 
     : { ...updated, status: "closed", result: { kind: "no-agreement" } });
 }
 
-export function openNextAttempt(state: Decision, attemptId: string, now: number): VotingOperation {
+export function openNextAttempt(state: Decision, attemptId: string, now: number, electorate?: readonly Voter[]): VotingOperation {
   if (state.status !== "awaiting-retry") return reject(state, "retry-not-available");
   if (!validId(attemptId)) return reject(state, "invalid-definition");
   if (state.attempts.some((entry) => entry.id === attemptId)) return reject(state, "duplicate-attempt");
   const previous = state.attempts.at(-1)!;
+  if (electorate && !validElectorate(electorate)) return reject(state, "invalid-electorate");
   const duration = state.policy.durationsMs[state.attempts.length]!;
   if (!validTime(now) || now < previous.deadline || !Number.isSafeInteger(now + duration)) return reject(state, "invalid-time");
-  return accept({ ...state, status: "open", attempts: [...state.attempts, attempt(attemptId, previous.electorate, now, duration)] });
+  return accept({ ...state, status: "open", attempts: [...state.attempts, attempt(attemptId, electorate ?? previous.electorate, now, duration)] });
 }

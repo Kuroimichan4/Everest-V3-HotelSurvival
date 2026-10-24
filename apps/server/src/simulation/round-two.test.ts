@@ -25,7 +25,7 @@ test.each(["RESCUE_APPROVED", "ABANDON_APPROVED", "NO_AGREEMENT"] as const)("con
   const state = beginRoundTwo(previous("RESCUE_APPROVED"));
   const resolved = resolveRoundTwo(state, "second", result);
   expect(resolved.ok).toBe(true);
-  expect(resolved.state.characters.map(c => [c.health, c.energy])).toEqual(Array.from({ length: 4 }, () => [result === "NO_AGREEMENT" ? 90 : 100, result === "RESCUE_APPROVED" ? 35 : 60]));
+  expect(resolved.state.characters.map(c => [c.health, c.energy])).toEqual(Array.from({ length: 4 }, () => [result === "NO_AGREEMENT" ? 90 : 100, result === "RESCUE_APPROVED" ? 25 : 50]));
   expect(resolved.state.roundTwo?.resolution).toMatchObject({ npc: result === "RESCUE_APPROVED" ? "rescued" : "abandoned", microearthquake: result === "NO_AGREEMENT", costs: { movementEnergy: 0 } });
   expect(resolved.state.roundOne).toBe(state.roundOne);
   expect(resolved.state.inventory).toBe(state.inventory);

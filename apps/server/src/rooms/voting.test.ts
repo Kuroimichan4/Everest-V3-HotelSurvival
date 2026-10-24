@@ -66,6 +66,213 @@ async function fixture(run: (context: {
 const input = (vote: PublicVote, optionId = "rescue"): VoteInput => ({ decisionId: vote.decisionId, attemptId: vote.attemptId, optionId });
 const cast = (client: Client, vote: PublicVote, optionId = "rescue") => client.timeout(2000).emitWithAck("vote:cast", input(vote, optionId));
 
+test("8D: una actualización por cliente, recibos repetidos sin emisiones ni historial duplicados", async () => {
+  await fixture(async ({ room, manager, connect }) => {
+    const { clients, sessions, vote } = await room(); const code = sessions[0]!.room.code;
+    for (const client of clients.slice(0, 3)) await cast(client, vote);
+    await Promise.all(clients.map(c => c.timeout(2000).emitWithAck("client:ping")));
+    const counts = [0, 0, 0, 0];
+    const activity: import("@everest/shared").GameActivityView[] = [];
+    clients.forEach((c, i) => { c.on("supplies:updated", () => { counts[i] = (counts[i] ?? 0) + 1; }); c.on("game:activity", value => { activity[i] = value; }); });
+    const bellhop = clients.find(c => manager.privateRole(c.id!)?.role === "bellhop")!;
+    const medic = clients.find(c => manager.privateRole(c.id!)?.role === "medic")!;
+    const pack = { requestId: crypto.randomUUID(), windowId: manager.suppliesView(code)!.windowId!, targetParticipantId: sessions[0]!.credential.participantId };
+    const replies = await Promise.all([bellhop.timeout(2000).emitWithAck("pack:give", pack), bellhop.timeout(2000).emitWithAck("pack:give", pack)]);
+    expect(replies.every(r => r.ok)).toBe(true);
+    await Promise.all(clients.map(c => c.timeout(2000).emitWithAck("client:ping")));
+    expect(counts).toEqual([1, 1, 1, 1]); expect(new Set(activity.map(a => JSON.stringify(a))).size).toBe(1);
+    expect(activity[0]!.entries).toMatchObject([{ kind: "pack", restored: 25 }]);
+    // Salud preparada exclusivamente en la prueba para comprobar la recuperación real hasta el máximo.
+    const game = (manager as unknown as { rooms: Map<string, { game: { state: import("../simulation/state.js").SimulationState } }> }).rooms.get(code)!.game;
+    game.state = { ...game.state, characters: game.state.characters.map((c, i) => i === 0 ? { ...c, health: 95 } : c) };
+    const treatment = { requestId: crypto.randomUUID(), gameId: manager.suppliesView(code)!.gameId, round: 1 as const, targetParticipantId: sessions[0]!.credential.participantId };
+    expect((await medic.timeout(2000).emitWithAck("medical:treat", treatment)).ok).toBe(true);
+    expect((await medic.timeout(2000).emitWithAck("medical:treat", treatment)).ok).toBe(true);
+    await Promise.all(clients.map(c => c.timeout(2000).emitWithAck("client:ping")));
+    expect(counts).toEqual([2, 2, 2, 2]); expect(activity[0]!.entries).toHaveLength(2);
+    expect(activity[0]!.entries[1]).toMatchObject({ kind: "treatment", restored: 5 });
+    expect(JSON.stringify(activity)).not.toMatch(/token|objective|responsibility|knowledge|actorId|role/);
+    const before = manager.activityView(code);
+    const index = clients.indexOf(bellhop); const observer = clients.find(c => c !== bellhop)!;
+    const left = new Promise<void>(resolve => observer.once("room:updated", () => resolve())); bellhop.disconnect(); await left;
+    const replacement = await connect();
+    const restored = new Promise<import("@everest/shared").GameActivityView>(resolve => replacement.once("game:activity", resolve));
+    await replacement.timeout(2000).emitWithAck("room:resume", sessions[index]!.credential);
+    expect(await restored).toEqual(before);
+    expect((await replacement.timeout(2000).emitWithAck("pack:give", pack)).ok).toBe(true);
+    expect(manager.activityView(code)).toEqual(before);
+  });
+});
+
+// Preparacion de energia exclusiva de pruebas que aislan rutas de otras mecanicas.
+function prepareEnergy(manager: RoomManager, code: string, energy: number) {
+  const game = (manager as unknown as { rooms: Map<string, { game: { state: import("../simulation/state.js").SimulationState } }> }).rooms.get(code)!.game;
+  game.state = { ...game.state, characters: game.state.characters.map(c => ({ ...c, energy })) };
+}
+
+function nextTransport(client: Client, predicate: (state: import("@everest/shared").TransportView) => boolean) {
+  return new Promise<import("@everest/shared").TransportView>((resolve, reject) => {
+    const timer = setTimeout(() => { client.off("transport:updated", listener); reject(new Error("Missing transport update")); }, 2000);
+    function listener(state: import("@everest/shared").TransportView) {
+      if (predicate(state)) { clearTimeout(timer); client.off("transport:updated", listener); resolve(state); }
+    }
+    client.on("transport:updated", listener);
+  });
+}
+
+test.each([2, 3] as const)("8C.1: recuperación y packs sincronizados en cuatro sesiones, F5 y aislamiento, ronda %i", async round => {
+  await fixture(async ({ room, manager, connect, routeRandom }) => {
+    const first = await room(); const other = await room(); const code = first.sessions[0]!.room.code;
+    const otherBefore = manager.suppliesView(other.sessions[0]!.room.code);
+    const foreign: unknown[] = [];
+    other.clients[0]!.on("round-two:updated", s => foreign.push(s)); other.clients[0]!.on("round-three:updated", s => foreign.push(s));
+    for (const c of first.clients.slice(0, 3)) await cast(c, first.vote, "abandon");
+    await first.clients[0]!.timeout(2000).emitWithAck("round:advance");
+    const npc = manager.publicVote(code)!; for (const c of first.clients.slice(0, 3)) await cast(c, npc, "abandon");
+    if (round === 3) {
+      await first.clients[0]!.timeout(2000).emitWithAck("route:open");
+      const route = manager.publicVote(code)!; for (const c of first.clients.slice(0, 3)) await cast(c, route, "unstable-corridor");
+      await first.clients[0]!.timeout(2000).emitWithAck("round-three:advance");
+    }
+    const update = (c: Client, predicate: (s: import("@everest/shared").RoundTwoView | import("@everest/shared").RoundThreeView) => boolean) =>
+      round === 2 ? nextRoundTwo(c, predicate) : nextRoundThree(c, predicate);
+    const current = () => round === 2 ? manager.roundTwoView(code)! : manager.roundThreeView(code)!;
+    prepareEnergy(manager, code, 100); routeRandom.mockClear();
+    await first.clients[0]!.timeout(2000).emitWithAck(round === 2 ? "route:open" : "round-three:open");
+    const old = manager.publicVote(code)!; const costly = round === 2 ? "shoring" : "fire-door";
+    for (const c of first.clients.slice(0, 2)) await cast(c, old, costly);
+    prepareEnergy(manager, code, 20); const before = manager.suppliesView(code)!;
+    const recoveries = first.clients.map(c => update(c, s => !!s.recovery));
+    await cast(first.clients[2]!, old, costly);
+    const blocked = await Promise.all(recoveries);
+    expect(new Set(blocked.map(s => JSON.stringify(s))).size).toBe(1);
+    expect(manager.suppliesView(code)!.characters).toEqual(before.characters);
+    expect(routeRandom).not.toHaveBeenCalled();
+    async function reload(predicate: (s: import("@everest/shared").RoundTwoView | import("@everest/shared").RoundThreeView) => boolean) {
+      const disconnected = new Promise<void>(resolve => first.clients[1]!.once("room:updated", () => resolve()));
+      first.clients[0]!.disconnect(); await disconnected;
+      const replacement = await connect(); first.clients[0] = replacement;
+      const restored = update(replacement, predicate);
+      await replacement.timeout(2000).emitWithAck("room:resume", first.sessions[0]!.credential);
+      return restored;
+    }
+    expect(await reload(s => !!s.recovery)).toEqual(blocked[0]);
+    const preparation = first.clients.map(c => update(c, s => !s.recovery && (s.round === 2 ? s.routeChoice?.phase === "preparation" : s.phase === "preparation")));
+    expect((await first.clients[1]!.timeout(2000).emitWithAck("route:retry", { decisionId: old.decisionId })).ok).toBe(true);
+    const prepared = await Promise.all(preparation);
+    expect(new Set(prepared.map(s => JSON.stringify(s))).size).toBe(1);
+    expect(await reload(s => !s.recovery)).toEqual(prepared[0]);
+    const unlocked = first.clients.map(c => update(c, s => (s.round === 2 ? s.routeChoice!.options : s.options).find(o => o.id === costly)?.availability.status === "available"));
+    const windowId = manager.suppliesView(code)!.windowId!;
+    for (const session of first.sessions) expect((await first.clients[2]!.timeout(2000).emitWithAck("pack:give", { requestId: crypto.randomUUID(), windowId, targetParticipantId: session.credential.participantId })).ok).toBe(true);
+    expect(new Set((await Promise.all(unlocked)).map(s => JSON.stringify(s))).size).toBe(1);
+    await first.clients[0]!.timeout(2000).emitWithAck(round === 2 ? "route:open" : "round-three:open");
+    const next = manager.publicVote(code)!; expect(next.decisionId).not.toBe(old.decisionId);
+    expect(await cast(first.clients[0]!, old, costly)).toEqual({ ok: false, error: "wrong-decision" });
+    const completed = first.clients.map(c => update(c, s => s.phase === "completed"));
+    for (const c of first.clients.slice(0, 3)) await cast(c, next, round === 2 ? "unstable-corridor" : "pipe-gallery");
+    expect(new Set((await Promise.all(completed)).map(s => JSON.stringify(s))).size).toBe(1);
+    expect(current().failedSelections).toHaveLength(1);
+    expect(routeRandom).toHaveBeenCalledTimes(1);
+    const final = manager.suppliesView(code)!;
+    expect(final.inventory.packs).toBe(4); expect(final.characters.every(c => c.energy === 25)).toBe(true);
+    await first.clients[1]!.timeout(2000).emitWithAck("route:retry", { decisionId: old.decisionId });
+    expect(manager.suppliesView(code)).toEqual(final); expect(routeRandom).toHaveBeenCalledTimes(1);
+    await other.clients[0]!.timeout(2000).emitWithAck("client:ping");
+    expect(foreign).toEqual([]); expect(manager.suppliesView(other.sessions[0]!.room.code)).toEqual(otherBefore);
+    expect(JSON.stringify(current())).not.toMatch(/accidentProbability|LOW|BAJO|objective|token|responsibility/);
+  });
+});
+
+test.each(["carry-all", "carry-one", "leave-all"])("8B: cuatro sesiones, F5, aislamiento y peticiones simultáneas: %s", async option => {
+  await fixture(async ({ room, manager, connect, routeRandom }) => {
+    const first = await room(); const other = await room();
+    const { clients, sessions } = first; const code = sessions[0]!.room.code;
+    const otherBefore = manager.suppliesView(other.sessions[0]!.room.code);
+    for (const client of clients.slice(0, 3)) await cast(client, first.vote, "abandon");
+    await clients[0]!.timeout(2000).emitWithAck("round:advance");
+    for (const client of clients.slice(0, 3)) await cast(client, manager.publicVote(code)!, "abandon");
+    await clients[0]!.timeout(2000).emitWithAck("route:open");
+    for (const client of clients.slice(0, 3)) await cast(client, manager.publicVote(code)!, "unstable-corridor");
+    await clients[0]!.timeout(2000).emitWithAck("round-three:advance");
+    // Escenario determinista de agotamiento, exclusivamente dentro del test.
+    const game = (manager as unknown as { rooms: Map<string, { game: { state: import("../simulation/state.js").SimulationState } }> }).rooms.get(code)!.game;
+    game.state = { ...game.state, characters: game.state.characters.map((c, i) => ({ ...c, energy: i < 2 ? 0 : 100 })) };
+    await clients[0]!.timeout(2000).emitWithAck("round-three:open");
+    const route = manager.publicVote(code)!;
+    const preparation = clients.map(c => nextTransport(c, s => s.cases.at(-1)?.phase === "preparation"));
+    for (const client of clients.slice(0, 3)) await cast(client, route, "pipe-gallery");
+    const prepared = await Promise.all(preparation);
+    expect(new Set(prepared.map(s => JSON.stringify(s))).size).toBe(1);
+    const preparationId = prepared[0]!.cases[0]!.preparationId;
+    const opens = await Promise.all([clients[2]!, clients[3]!].map(c => c.timeout(2000).emitWithAck("transport:open", { preparationId })));
+    expect(opens.every(reply => reply.ok)).toBe(true);
+    let vote = manager.publicVote(code)!;
+    expect(vote.requiredVotes).toBe(2);
+    expect(await cast(clients[0]!, vote, option)).toEqual({ ok: false, error: "not-authorized" });
+    const outsider = await connect();
+    expect(await cast(outsider, vote, option)).toEqual({ ok: false, error: "invalid-session" });
+    expect((await cast(clients[2]!, vote, option)).ok).toBe(true);
+    expect(await cast(clients[2]!, vote, option)).toEqual({ ok: false, error: "duplicate-vote" });
+    const disconnected = new Promise<void>(resolve => clients[3]!.once("room:updated", () => resolve()));
+    clients[2]!.disconnect(); await disconnected;
+    const replacement = await connect(); clients[2] = replacement;
+    const restored = nextTransport(replacement, s => s.cases.at(-1)?.phase === "voting");
+    const own = new Promise<OwnVote>(resolve => replacement.once("vote:own", resolve));
+    await replacement.timeout(2000).emitWithAck("room:resume", sessions[2]!.credential);
+    expect((await restored).cases[0]!.vote).toMatchObject({ decisionId: vote.decisionId, attemptId: vote.attemptId, deadline: vote.deadline });
+    expect((await own).optionId).toBe(option);
+    if (option === "carry-one") {
+      expect((await cast(clients[3]!, vote, option)).ok).toBe(true);
+      const intermediate = manager.transportView(code)!.cases[0]!;
+      expect(intermediate).toMatchObject({ phase: "selection", abandonedIds: [], transportedIds: [] });
+      expect(game.state.characters.every(c => !c.eliminated)).toBe(true);
+      vote = intermediate.vote!;
+      expect((await cast(clients[2]!, vote, "person-1")).ok).toBe(true);
+    }
+    routeRandom.mockClear();
+    const rejected: unknown[] = [];
+    routeRandom.mockImplementation(() => {
+      rejected.push(manager.givePack(clients[2]!.id!, { requestId: crypto.randomUUID(), windowId: preparationId, targetParticipantId: sessions[1]!.credential.participantId }));
+      return 0.99;
+    });
+    const updates = clients.map(c => nextTransport(c, s => s.cases.at(-1)?.phase === "completed"));
+    const revoked = option === "carry-all" ? Promise.resolve() : new Promise<void>(resolve => clients[0]!.once("game:role-unavailable", resolve));
+    const replies = await Promise.all([cast(clients[3]!, vote, option === "carry-one" ? "person-1" : option), cast(clients[3]!, vote, option === "carry-one" ? "person-1" : option)]);
+    expect(replies.filter(reply => reply.ok)).toHaveLength(1);
+    const final = await Promise.all(updates);
+    await revoked;
+    expect(new Set(final.map(s => JSON.stringify(s))).size).toBe(1);
+    expect(routeRandom).toHaveBeenCalledTimes(1);
+    expect(rejected).toEqual([{ ok: false, error: "supplies-not-open" }]);
+    const result = final[0]!.cases[0]!;
+    expect(result.decisions).toHaveLength(option === "carry-one" ? 2 : 1);
+    expect(result.transportedIds).toHaveLength(option === "carry-all" ? 2 : option === "carry-one" ? 1 : 0);
+    expect(result.abandonedIds).toHaveLength(option === "carry-all" ? 0 : option === "carry-one" ? 1 : 2);
+    expect(manager.roundThreeView(code)!.selection!.decisionId).toBe(route.decisionId);
+    expect(manager.suppliesView(code)!.inventory).toEqual({ packs: 8, medicalUnits: 4 });
+    expect(game.state.tools.crowbar).toBe("available");
+    expect(JSON.stringify(final[0])).not.toMatch(/characterId|accidentProbability|token|responsibility|LOW/);
+    if (option !== "carry-all") {
+      const left = new Promise<void>(resolve => clients[3]!.once("room:updated", () => resolve()));
+      clients[0]!.disconnect(); await left;
+      const abandoned = await connect();
+      const leaks: unknown[] = []; abandoned.on("game:role", role => leaks.push(role));
+      const recovered = nextTransport(abandoned, s => s.cases[0]?.phase === "completed");
+      await abandoned.timeout(2000).emitWithAck("room:resume", sessions[0]!.credential);
+      expect(await recovered).toEqual(final[0]);
+      await abandoned.timeout(2000).emitWithAck("client:ping");
+      expect(leaks).toEqual([]);
+      expect(await cast(abandoned, vote, "carry-all")).toEqual({ ok: false, error: "dead" });
+    }
+    const before = manager.suppliesView(code);
+    await clients[3]!.timeout(2000).emitWithAck("transport:open", { preparationId });
+    expect(manager.suppliesView(code)).toEqual(before);
+    expect(routeRandom).toHaveBeenCalledTimes(1);
+    expect(manager.suppliesView(other.sessions[0]!.room.code)).toEqual(otherBefore);
+  });
+});
+
 test.each(["rescue", "abandon", "none"])("ronda 2 sincronizada, aislada y recuperable: %s", async option => {
   await fixture(async ({ room, manager, clock, connect }) => {
     const first = await room();
@@ -120,7 +327,7 @@ test.each(["rescue", "abandon", "none"])("ronda 2 sincronizada, aislada y recupe
     }
     const final = manager.roundTwoSession(replacement.id!)!;
     expect(final.phase).toBe("route-pending");
-    expect(final.characters.map(c => [c.health, c.energy])).toEqual(Array.from({ length: 4 }, () => [option === "none" ? 90 : 100, option === "rescue" ? 35 : 60]));
+    expect(final.characters.map(c => [c.health, c.energy])).toEqual(Array.from({ length: 4 }, () => [option === "none" ? 90 : 100, option === "rescue" ? 25 : 50]));
     expect(final.npc).toBe(option === "rescue" ? "rescued" : "abandoned");
     expect(await cast(first.clients[3]!, vote)).toEqual({ ok: false, error: "closed" });
     const snapshot = new Promise<import("@everest/shared").RoundTwoView>(resolve => replacement.once("round-two:updated", resolve));
@@ -155,7 +362,7 @@ test.each(["rescue", "abandon"])("cuatro sockets reciben mayoría inmediata de %
     const summary = finalSummaries[0]!;
     expect(summary).toMatchObject({ round: 1, completed: true, npc: option === "rescue" ? "rescued" : "abandoned", microearthquake: false, inventory: { packs: 8, medicalUnits: 4 } });
     expect(summary.characters.map((character) => [character.participantId, character.health, character.energy]))
-      .toEqual(first.sessions.map((session) => [session.credential.participantId, 100, option === "rescue" ? 60 : 85]));
+      .toEqual(first.sessions.map((session) => [session.credential.participantId, 100, option === "rescue" ? 50 : 75]));
     expect(JSON.stringify(summary)).not.toMatch(/knowledge|objective|role|characterId|token/);
     const resumedSummary = new Promise<RoundOneSummary>((resolve) => first.clients[0]!.once("round:completed", resolve));
     await first.clients[0]!.timeout(2000).emitWithAck("room:resume", first.sessions[0]!.credential);
@@ -171,7 +378,7 @@ test.each(["rescue", "abandon"])("cuatro sockets reciben mayoría inmediata de %
     await secondClosed;
     const otherSummary = manager.roundSummary(second.sessions[0]!.room.code)!;
     expect(otherSummary.gameId).not.toBe(summary.gameId);
-    expect(otherSummary.characters.every((character) => character.energy === 85)).toBe(true);
+    expect(otherSummary.characters.every((character) => character.energy === 75)).toBe(true);
     expect(manager.roundSummary(first.sessions[0]!.room.code)).toEqual(summary);
     const secondState = new Promise<OwnVote>((resolve) => second.clients[3]!.once("vote:own", resolve));
     // Una reautenticación de la misma conexión solo recupera la decisión existente.
@@ -219,7 +426,7 @@ test("reconexión recupera voto propio y plazo; votos mezclados vencen automáti
     const summary = manager.summarySession(replacement.id!)!;
     expect(summary).toMatchObject({ result: "NO_AGREEMENT", microearthquake: true, npc: "abandoned" });
     expect(summary.characters.map((character) => [character.health, character.energy]))
-      .toEqual(Array.from({ length: 4 }, () => [90, 85]));
+      .toEqual(Array.from({ length: 4 }, () => [90, 75]));
     expect(summary.inventory).toEqual({ packs: 8, medicalUnits: 4 });
     const disconnectedAgain = new Promise<void>((resolve) => clients[1]!.once("room:updated", () => resolve()));
     replacement.disconnect();
@@ -256,6 +463,7 @@ test.each(["ventilation", "shoring", "unstable-corridor", "NO_AGREEMENT", "venti
     await host.timeout(2000).emitWithAck("round:advance");
     const rescueVote = manager.publicVote(code)!;
     for (const client of first.clients.slice(0, 3)) await cast(client, rescueVote);
+    prepareEnergy(manager, code, 50);
     const before = view();
     expect(before.routeChoice).toMatchObject({ phase: "preparation", ventilationRevealed: false, vote: null, result: null });
     expect(before.routeChoice!.options.map(o => o.id)).toEqual(["unstable-corridor", "shoring"]);
@@ -329,7 +537,7 @@ test.each(["ventilation", "shoring", "unstable-corridor", "NO_AGREEMENT", "venti
     }
     const final = view();
     expect(final.routeChoice).toMatchObject({ phase: "selected", result: { decisionId: vote.decisionId, outcome } });
-    const cost = outcome === "ventilation" ? 20 : outcome === "shoring" ? 30 : 10;
+    const cost = outcome === "ventilation" ? 30 : outcome === "shoring" ? 40 : 20;
     expect(final.phase).toBe("completed");
     expect(final.characters).toEqual(before.characters.map(c => ({ ...c, energy: c.energy - cost, health: c.health - (outcome === "NO_AGREEMENT" ? 10 : 0) })));
     expect(final.movement).toMatchObject({ status: "completed", accident: false, energyCost: cost });
@@ -351,7 +559,7 @@ test.each(["ventilation", "shoring", "unstable-corridor", "NO_AGREEMENT", "venti
     expect(manager.roundTwoView(other.sessions[0]!.room.code)).toEqual(otherBefore);
     const serialized = JSON.stringify(final);
     expect(serialized).not.toMatch(/probability|danger|LOW|BAJO|0\.1|10 %|knowledge|objective|token/);
-    for (const option of final.routeChoice!.options) expect(Object.keys(option).sort()).toEqual(["blocked", "energyCost", "id", "name"]);
+    for (const option of final.routeChoice!.options) expect(Object.keys(option).sort()).toEqual(["availability", "blocked", "energyCost", "id", "name"]);
     for (const client of first.clients.slice(1)) expect(JSON.stringify(manager.privateRole(client.id!))).not.toMatch(/LOW|BAJO|10 %|0\.1/);
   });
 });
@@ -390,6 +598,7 @@ test.each(movementScenarios)("5C.2 synchronized movement $route / accident $acci
     const host = first.clients[0]!;
     const code = first.sessions[0]!.room.code;
     const secondBefore = manager.roundTwoView(second.sessions[0]!.room.code)!;
+    prepareEnergy(manager, code, 50);
     const before = manager.roundTwoView(code)!;
     if (route === "ventilation") {
       const maintenance = first.clients.find(c => manager.privateRole(c.id!)?.role === "maintenance")!;
@@ -404,7 +613,7 @@ test.each(movementScenarios)("5C.2 synchronized movement $route / accident $acci
     expect(new Set(results.map(state => JSON.stringify(state))).size).toBe(1);
     const final = results[0]!;
     const actualRoute = route === "NO_AGREEMENT" ? "unstable-corridor" : route;
-    const cost = actualRoute === "ventilation" ? 20 : actualRoute === "shoring" ? 30 : 10;
+    const cost = actualRoute === "ventilation" ? 30 : actualRoute === "shoring" ? 40 : 20;
     const damage = actualRoute === "ventilation" ? 5 : actualRoute === "shoring" ? 10 : 20;
     expect(final.movement).toMatchObject({ status: "completed", routeId: actualRoute, forced: route === "NO_AGREEMENT", microearthquake: route === "NO_AGREEMENT", energyCost: cost, accident });
     if (final.movement?.status !== "completed") throw new Error("Missing movement");
@@ -692,9 +901,9 @@ test.each(roundThreeScenarios)("7B: four sockets round 3 $route accident $accide
     await finishTwo(first); await finishTwo(other);
     const bellhop = first.clients.find(c => manager.privateRole(c.id!)?.role === "bellhop")!;
     const suppliesTwo = manager.suppliesView(code)!;
-    for (const session of first.sessions) expect((await bellhop.timeout(2000).emitWithAck("pack:give", { requestId: crypto.randomUUID(), windowId: suppliesTwo.windowId!, targetParticipantId: session.credential.participantId })).ok).toBe(true);
+    for (const session of first.sessions) for (let count = 0; count < 2; count++) expect((await bellhop.timeout(2000).emitWithAck("pack:give", { requestId: crypto.randomUUID(), windowId: suppliesTwo.windowId!, targetParticipantId: session.credential.participantId })).ok).toBe(true);
     const before = manager.suppliesView(code)!;
-    expect(before.characters.every(c => c.energy === 50)).toBe(true);
+    expect(before.characters.every(c => c.energy === 55)).toBe(true);
     const sheets = first.clients.map(client => manager.privateRole(client.id!));
     const historyTwo = manager.roundTwoView(code)!;
     const otherBefore = manager.suppliesView(other.sessions[0]!.room.code);
@@ -715,7 +924,7 @@ test.each(roundThreeScenarios)("7B: four sockets round 3 $route accident $accide
     expect(await host().timeout(2000).emitWithAck("round-three:advance")).toEqual({ ok: true });
     expect(manager.roundThreeView(code)).toEqual(prep);
     expect(await first.clients[1]!.timeout(2000).emitWithAck("round-three:open")).toEqual({ ok: false, error: "not-creator" });
-    for (const option of prep.options) expect(Object.keys(option).sort()).toEqual(["description", "energyCost", "id", "name"]);
+    for (const option of prep.options) expect(Object.keys(option).sort()).toEqual(["availability", "description", "energyCost", "id", "name"]);
     const publicText = JSON.stringify(prep);
     expect(publicText).not.toMatch(/probability|danger|random|medical-conference-room|supply-warehouse|gained|LOW|MODERATE|EXTREME/);
     for (const sheet of sheets) {
@@ -782,7 +991,7 @@ test.each(roundThreeScenarios)("7B: four sockets round 3 $route accident $accide
     expect(new Set(results.map(state => JSON.stringify(state))).size).toBe(1);
     const final = results[0]!;
     const actual = route === "NO_AGREEMENT" ? "pipe-gallery" : route;
-    const cost = actual === "fire-door" ? 20 : actual === "pipe-gallery" ? 10 : 30;
+    const cost = actual === "fire-door" ? 30 : actual === "pipe-gallery" ? 20 : 40;
     const damage = actual === "pipe-gallery" ? 30 : 10;
     expect(final.selection!.outcome).toBe(route);
     expect(final.forced).toBe(route === "NO_AGREEMENT"); expect(final.earthquake).toBe(final.forced);
@@ -840,7 +1049,7 @@ test("7B: packs and medical treatments round 3 preserve history, round limits an
     const thirdVote = manager.publicVote(code)!;
     for (const client of clients.slice(0, 3)) await cast(client, thirdVote, "pipe-gallery");
     const history = manager.roundThreeView(code)!;
-    expect(history.afterRoute!.characters.slice(0, 2).map(c => [c.health, c.energy])).toEqual([[50, 40], [50, 40]]);
+    expect(history.afterRoute!.characters.slice(0, 2).map(c => [c.health, c.energy])).toEqual([[50, 10], [50, 10]]);
     const actual = manager.suppliesView(code)!;
     const calls = routeRandom.mock.calls.length;
     const postTreatment = { ...medicalTwo, requestId: crypto.randomUUID(), round: 3 as const };
@@ -853,7 +1062,7 @@ test("7B: packs and medical treatments round 3 preserve history, round limits an
     expect((await bellhop.timeout(2000).emitWithAck("pack:give", pack)).ok).toBe(true);
     const currentStates = await Promise.all(packUpdates);
     expect(new Set(currentStates.map(s => JSON.stringify(s))).size).toBe(1);
-    expect(currentStates[0]!.characters[0]).toMatchObject({ health: 70, energy: 65 });
+    expect(currentStates[0]!.characters[0]).toMatchObject({ health: 70, energy: 35 });
     expect(currentStates[0]!.inventory).toEqual({ packs: 3, medicalUnits: 1 });
     expect(manager.medicalView(code)!.treatments.map(t => [t.round, t.participantId])).toEqual([[2, sessions[0]!.credential.participantId], [3, sessions[1]!.credential.participantId], [3, sessions[0]!.credential.participantId]]);
     const disconnected = new Promise<void>(resolve => clients[1]!.once("room:updated", () => resolve()));
@@ -871,7 +1080,7 @@ test("7B: packs and medical treatments round 3 preserve history, round limits an
 });
 
 
-test("7B: a blocked round 3 reaches four sockets and survives reconnection without another roll", async () => {
+test("7B: an exhausted round 3 pauses before movement and reaches four sockets and survives reconnection without another roll", async () => {
   await fixture(async ({ room, manager, routeRandom, connect }) => {
     const { clients, sessions, vote } = await room();
     const host = clients[0]!; const code = sessions[0]!.room.code;
@@ -884,27 +1093,27 @@ test("7B: a blocked round 3 reaches four sockets and survives reconnection witho
     for (const client of clients.slice(0, 3)) await cast(client, secondRoute, "unstable-corridor");
     await host.timeout(2000).emitWithAck("round-three:advance");
     const before = manager.suppliesView(code)!;
-    expect(before.characters.every(c => c.energy === 25)).toBe(true);
+    expect(before.characters.every(c => c.energy === 5)).toBe(true);
     routeRandom.mockClear();
-    await host.timeout(2000).emitWithAck("round-three:open");
-    const third = manager.publicVote(code)!;
-    const updates = clients.map(c => nextRoundThree(c, state => state.phase === "blocked"));
-    for (const client of clients.slice(0, 3)) await cast(client, third, "metal-debris");
+    expect(await host.timeout(2000).emitWithAck("round-three:open")).toEqual({ ok: false, error: "no-available-routes" });
+    const updates = clients.map(c => nextRoundThree(c, state => state.phase === "preparation"));
+    for (let i = 0; i < 4; i++) await clients[i]!.timeout(2000).emitWithAck("room:resume", sessions[i]!.credential);
     const states = await Promise.all(updates);
     expect(new Set(states.map(s => JSON.stringify(s))).size).toBe(1);
     const final = states[0]!;
-    expect(final).toMatchObject({ phase: "blocked", blocked: "transport-vote-pending", movement: null, afterRoute: null });
-    expect(manager.suppliesView(code)).toEqual({ ...before, windowId: null });
+    expect(final).toMatchObject({ phase: "preparation", blocked: null, movement: null, afterRoute: null });
+    expect(final.options.every(o => o.availability.status === "unavailable")).toBe(true);
+    expect(manager.suppliesView(code)).toEqual(before);
     const disconnected = new Promise<void>(resolve => clients[1]!.once("room:updated", () => resolve()));
     host.disconnect(); await disconnected;
     const replacement = await connect();
-    const restored = nextRoundThree(replacement, state => state.phase === "blocked");
+    const restored = nextRoundThree(replacement, state => state.phase === "preparation");
     await replacement.timeout(2000).emitWithAck("room:resume", sessions[0]!.credential);
     expect(await restored).toEqual(final);
     await replacement.timeout(2000).emitWithAck("round-three:open");
     await replacement.timeout(2000).emitWithAck("round-three:advance");
     expect(routeRandom).not.toHaveBeenCalled();
-    expect(manager.suppliesView(code)).toEqual({ ...before, windowId: null });
+    expect(manager.suppliesView(code)).toEqual({ ...before, windowId: expect.any(String) });
   });
 });
 
@@ -926,6 +1135,7 @@ test.each([2, 3] as const)("8A: packs in round %i preparation, F5 and rejection 
     }
     await prepare(first); await prepare(other);
     const code = first.sessions[0]!.room.code;
+    if (round === 3) prepareEnergy(manager, code, 50);
     const before = manager.suppliesView(code)!;
     expect(before.windowId).not.toBeNull();
     const otherBefore = manager.suppliesView(other.sessions[0]!.room.code);

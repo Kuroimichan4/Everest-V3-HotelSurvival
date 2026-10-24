@@ -1,6 +1,7 @@
+import { MOVEMENT_ENERGY } from "./energy-costs.js";
 import { payMovement, type MovementCharge, type TransportPlan } from "./transport.js";
 import { applyDamage, type OperationError } from "./operations.js";
-import { isAlive, type HumanRole, type SimulationState } from "./state.js";
+import { isAlive, type HumanRole, type SimulationState, type EngineState } from "./state.js";
 
 export type RouteId = "unstable-corridor" | "ventilation" | "shoring";
 type Danger = "LOW" | "MODERATE" | "HIGH";
@@ -16,11 +17,11 @@ interface RouteDefinition {
 
 /** Catálogo exclusivo del backend. No serializar estas definiciones. */
 const routes: readonly RouteDefinition[] = [
-  { id: "unstable-corridor", name: "Pasillo principal inestable", energyCost: 10,
+  { id: "unstable-corridor", name: "Pasillo principal inestable", energyCost: MOVEMENT_ENERGY["unstable-corridor"],
     danger: "HIGH", accidentProbability: 0.35, accidentDamage: 20, specialists: [] },
-  { id: "ventilation", name: "Conductos de ventilación", energyCost: 20,
+  { id: "ventilation", name: "Conductos de ventilación", energyCost: MOVEMENT_ENERGY["ventilation"],
     danger: "LOW", accidentProbability: 0.10, accidentDamage: 5, specialists: [] },
-  { id: "shoring", name: "Despeje y apuntalamiento", energyCost: 30,
+  { id: "shoring", name: "Despeje y apuntalamiento", energyCost: MOVEMENT_ENERGY["shoring"],
     danger: "MODERATE", accidentProbability: 0.20, accidentDamage: 10,
     specialists: ["architect-engineer", "maintenance"] },
 ];
@@ -69,14 +70,14 @@ export interface MovementDamage {
   readonly total: number;
   readonly healthLost: number;
 }
-export type RouteEffectsResult =
-  | { readonly ok: false; readonly state: SimulationState; readonly error: RouteError }
-  | { readonly ok: true; readonly state: SimulationState; readonly accident: boolean; readonly victimIds: readonly string[]; readonly damage: readonly MovementDamage[];
+export type RouteEffectsResult<S extends EngineState = SimulationState> =
+  | { readonly ok: false; readonly state: S; readonly error: RouteError }
+  | { readonly ok: true; readonly state: S; readonly accident: boolean; readonly victimIds: readonly string[]; readonly damage: readonly MovementDamage[];
       readonly deceasedIds: readonly string[]; readonly charges: readonly MovementCharge[] };
 
 /** Mismo pago y accidente para los catálogos de backend. No exponer las definiciones al cliente. */
-export function traverseRouteEffects(state: SimulationState, route: RouteEffects, random: RandomSource, plan?: TransportPlan): RouteEffectsResult {
-  const reject = (error: RouteError): RouteEffectsResult => ({ ok: false, error, state });
+export function traverseRouteEffects<S extends EngineState>(state: S, route: RouteEffects, random: RandomSource, plan?: TransportPlan): RouteEffectsResult<S> {
+  const reject = (error: RouteError): RouteEffectsResult<S> => ({ ok: false, error, state });
   if (!Number.isFinite(route.energyCost) || route.energyCost < 0
     || !Number.isFinite(route.accidentProbability) || route.accidentProbability < 0 || route.accidentProbability > 1
     || !Number.isFinite(route.accidentDamage) || route.accidentDamage < 0

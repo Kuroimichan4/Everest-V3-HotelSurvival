@@ -9,30 +9,42 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
     for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
       if (!manager.privateRole(member)) io.sockets.sockets.get(member)?.emit("game:role-unavailable");
     }
+    const transport = manager.transportView(code);
+    if (transport) io.to(channel(code)).emit("transport:updated", transport);
     const supplies = manager.suppliesView(code);
     if (supplies) io.to(channel(code)).emit("supplies:updated", supplies);
+    const activity = manager.activityView(code);
+    if (activity) io.to(channel(code)).emit("game:activity", activity);
     const medical = manager.medicalView(code);
     if (medical) io.to(channel(code)).emit("medical:updated", medical);
+    const roundTwo = manager.roundTwoView(code);
+    if (roundTwo) io.to(channel(code)).emit("round-two:updated", roundTwo);
+    const roundFour = manager.roundFourView(code);
+    if (roundFour) io.to(channel(code)).emit("round-four:updated", roundFour);
+    const roundThree = manager.roundThreeView(code);
+    if (roundThree) io.to(channel(code)).emit("round-three:updated", roundThree);
   };
   manager.onVotingChanged = (code) => {
     manager.onSuppliesChanged(code);
     const vote = manager.publicVote(code);
     if (vote) io.to(channel(code)).emit("vote:updated", vote);
-    const roundTwo = manager.roundTwoView(code);
-    if (roundTwo) io.to(channel(code)).emit("round-two:updated", roundTwo);
-    const roundThree = manager.roundThreeView(code);
-    if (roundThree) io.to(channel(code)).emit("round-three:updated", roundThree);
     const summary = manager.roundSummary(code);
     if (summary) io.to(channel(code)).emit("round:completed", summary);
   };
   const sendVoting = (socketId: string) => {
     const state = manager.votingSession(socketId);
+    const transport = manager.transportSession(socketId);
+    if (transport) io.sockets.sockets.get(socketId)?.emit("transport:updated", transport);
     const supplies = manager.suppliesSession(socketId);
     if (supplies) io.sockets.sockets.get(socketId)?.emit("supplies:updated", supplies);
+    const activity = manager.activitySession(socketId);
+    if (activity) io.sockets.sockets.get(socketId)?.emit("game:activity", activity);
     const medical = manager.medicalSession(socketId);
     if (medical) io.sockets.sockets.get(socketId)?.emit("medical:updated", medical);
     const roundTwo = manager.roundTwoSession(socketId);
     if (roundTwo) io.sockets.sockets.get(socketId)?.emit("round-two:updated", roundTwo);
+    const roundFour = manager.roundFourSession(socketId);
+    if (roundFour) io.sockets.sockets.get(socketId)?.emit("round-four:updated", roundFour);
     const roundThree = manager.roundThreeSession(socketId);
     if (roundThree) io.sockets.sockets.get(socketId)?.emit("round-three:updated", roundThree);
     const summary = manager.summarySession(socketId);
@@ -44,6 +56,11 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
   };
 
   io.on("connection", (socket) => {
+    socket.on("round-four:advance", ack => { if (typeof ack === "function") ack(manager.roundFourAction(socket.id, "advance")); });
+    socket.on("round-four:open", ack => { if (typeof ack === "function") ack(manager.roundFourAction(socket.id, "open")); });
+    socket.on("round-four:retry", (input, ack) => { if (typeof ack === "function") ack(manager.roundFourAction(socket.id, "retry", input)); });
+    socket.on("route:retry", (input, ack) => { if (typeof ack === "function") ack(manager.retryRoute(socket.id, input)); });
+    socket.on("transport:open", (input, ack) => { if (typeof ack === "function") ack(manager.openTransport(socket.id, input)); });
     socket.on("round-three:advance", (ack) => { if (typeof ack === "function") ack(manager.roundThreeAction(socket.id, "advance")); });
     socket.on("round-three:open", (ack) => { if (typeof ack === "function") ack(manager.roundThreeAction(socket.id, "open")); });
     socket.on("medical:treat", (input, ack) => {

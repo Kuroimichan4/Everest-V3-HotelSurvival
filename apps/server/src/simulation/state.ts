@@ -2,29 +2,34 @@
 export type HumanRole = "maintenance" | "medic" | "architect-engineer" | "bellhop";
 
 export interface HumanCharacter {
+  readonly personalItems?: readonly IndividualItem[];
   readonly id: string;
   readonly role: HumanRole;
   readonly health: number;
   readonly energy: number;
-  /** Preparado para 8B; esta fase no ejecuta abandonos ni eliminaciones. */
+  /** Abandono definitivo, independiente de la salud. */
   readonly eliminated?: boolean;
 }
+
+export interface IndividualItem { readonly id: string; readonly kind: string }
 
 export interface SharedInventory {
   readonly packs: number;
   readonly medicalUnits: number;
 }
 
-export interface SimulationState {
+export interface SimulationState<Round extends 1 | 2 | 3 | 4 = 1 | 2 | 3 | 4> {
+  readonly sharedItems?: readonly IndividualItem[];
+  readonly roundOnePreparation?: { readonly decisionId: string; readonly result: import("@everest/shared").RescueOutcome };
   readonly transportMovements?: readonly import("./transport-movement.js").TransportMovementRecord[];
   readonly tools: { readonly crowbar: "available" | "lost" };
   readonly roundThreeRoute?: import("./round-three-routes.js").RoundThreeRouteResolution;
   readonly medicalTreatments?: readonly {
-    readonly round: 1 | 2 | 3;
+    readonly round: Round extends 4 ? 1 | 2 | 3 | 4 : Round;
     readonly characterId: string;
     readonly healthRestored: number;
   }[];
-  readonly currentRound: 1 | 2 | 3;
+  readonly currentRound: Round;
   readonly roundTwo?: {
     readonly movement?: import("./round-two-movement.js").MovementResolution;
     readonly npcId: "round-two-survivor";
@@ -43,6 +48,9 @@ export interface SimulationState {
   readonly characters: readonly HumanCharacter[];
   readonly inventory: SharedInventory;
 }
+
+/** Núcleo reutilizable por rondas internas todavía no conectadas al multijugador. */
+export type EngineState = SimulationState<1 | 2 | 3 | 4>;
 
 /** Los identificadores son internos y únicos dentro de cada partida. */
 export function createInitialState(): SimulationState {

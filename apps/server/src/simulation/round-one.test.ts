@@ -3,9 +3,9 @@ import { createInitialState } from "./state.js";
 import { resolveRoundOne } from "./round-one.js";
 
 test.each([
-  ["RESCUE_APPROVED", 100, 60, "rescued", 25, false],
-  ["ABANDON_APPROVED", 100, 85, "abandoned", 0, false],
-  ["NO_AGREEMENT", 90, 85, "abandoned", 0, true],
+  ["RESCUE_APPROVED", 100, 50, "rescued", 25, false],
+  ["ABANDON_APPROVED", 100, 75, "abandoned", 0, false],
+  ["NO_AGREEMENT", 90, 75, "abandoned", 0, true],
 ] as const)("resuelve %s una sola vez sin consumir inventario", (outcome, health, energy, npc, rescueEnergy, microearthquake) => {
   const initial = createInitialState();
   const resolved = resolveRoundOne(initial, "decision", outcome);
@@ -14,7 +14,7 @@ test.each([
     .toEqual(Array.from({ length: 4 }, () => [health, energy]));
   expect(resolved.state.roundOne).toEqual({ decisionId: "decision", result: outcome, npc,
     consequencesApplied: true, completed: true, microearthquake,
-    costs: { rescueEnergy, movementEnergy: 15, damage: microearthquake ? 10 : 0 } });
+    costs: { rescueEnergy, movementEnergy: 25, damage: microearthquake ? 10 : 0 } });
   expect(resolved.state.inventory).toEqual({ packs: 8, medicalUnits: 4 });
   expect(initial).toEqual(createInitialState());
   expect(resolveRoundOne(resolved.state, "decision", outcome).state).toBe(resolved.state);

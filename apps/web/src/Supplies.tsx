@@ -33,7 +33,7 @@ export function Supplies({ state, bellhop, enabled, onGive }: {
   const sending = useRef(false);
   const [message, setMessage] = useState("");
   const living = state.characters.filter(c => c.health > 0 && !c.eliminated);
-  const target = living.find(c => c.participantId === targetId) ?? living[0];
+  const target = living.find(c => c.participantId === targetId) ?? living.find(c => c.energy < 100) ?? living[0];
   const unavailable = !enabled ? "Esperando conexión y autenticación del personaje."
     : !state.windowId ? "Reparto cerrado. Disponible durante la preparación de una ruta o después de completarla; no durante votaciones, desplazamientos ni su resolución."
     : pending ? "Hay una entrega pendiente de confirmación."
@@ -68,24 +68,20 @@ export function Supplies({ state, bellhop, enabled, onGive }: {
   }, [enabled, bellhop, storageKey]);
 
   function give() {
-    if (!bellhop || unavailable || !target || !state.windowId || busy) return;
+    if (!bellhop || unavailable || !target || !state.windowId || busy || sending.current) return;
     const input: PackInput = { requestId: crypto.randomUUID(), windowId: state.windowId, targetParticipantId: target.participantId };
     try { sessionStorage.setItem(storageKey, JSON.stringify(input)); }
     catch { setMessage("No se pudo guardar la entrega pendiente. Habilita el almacenamiento de sesión antes de repartir."); return; }
+    setTargetId(target.participantId);
     setPending(input);
     send(input);
   }
 
-  return <section aria-label="Estado actual y suministros">
-    <h3>Estado actual del equipo</h3>
-    <p>Ronda {state.round}. Estos valores incluyen los packs y tratamientos aplicados.</p>
-    <table><thead><tr><th>Participante</th><th>Salud actual</th><th>Energía actual</th><th>Estado</th></tr></thead>
-      <tbody>{state.characters.map(c => <tr key={c.participantId}><td>{c.name}</td><td>{c.health}</td><td>{c.energy}</td><td>{c.eliminated ? "Eliminado" : c.health > 0 ? "Vivo" : "Fallecido"}</td></tr>)}</tbody>
-    </table>
-    {state.movementBlocked && <p role="alert">{state.movementBlocked === "transport-vote-pending" ? "Hay compañeros que necesitan transporte. Pendiente la votación de la fase 8B; nadie ha sido eliminado ni se han confirmado costes parciales." : "El avance está bloqueado por un caso pendiente de resolución."}</p>}
-    <p>Packs disponibles: {state.inventory.packs}. Unidades médicas: {state.inventory.medicalUnits}.</p>
-    <h3>Gestionar suministros</h3>
-    {!bellhop && <p>Solo Botones vivo puede autorizar el reparto. Las existencias son compartidas.</p>}
+  useEffect(() => { if (!message) return; const timer = setTimeout(() => setMessage(""), 6500); return () => clearTimeout(timer); }, [message]);
+  if (!bellhop) return null;
+  return <section className="panel specialist-panel" aria-label="Gestionar suministros">
+    <p className="eyebrow">BOTONES</p><h3>Gestionar suministros</h3>
+    <p>Packs disponibles: {state.inventory.packs}</p>
     {bellhop && <div>
       <p role="status">{unavailable ?? "Reparto disponible. Cada pack recupera hasta 25 de energía, con máximo de 100."}</p>
       <label>Destinatario<select value={target?.participantId ?? ""} disabled={!enabled || !state.windowId || busy || !!pending} onChange={event => setTargetId(event.target.value)}>

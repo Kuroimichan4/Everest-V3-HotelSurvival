@@ -1,5 +1,5 @@
 import { isAlive } from "./state.js";
-import type { HumanCharacter, SimulationState } from "./state.js";
+import type { HumanCharacter, SimulationState, EngineState } from "./state.js";
 
 export type OperationError =
   | "invalid-amount"
@@ -16,15 +16,15 @@ export type OperationError =
   | "transport-plan-infeasible"
   | "no-living-characters";
 
-export type OperationResult =
-  | { readonly ok: true; readonly state: SimulationState }
-  | { readonly ok: false; readonly error: OperationError; readonly state: SimulationState };
+export type OperationResult<S extends EngineState = SimulationState> =
+  | { readonly ok: true; readonly state: S }
+  | { readonly ok: false; readonly error: OperationError; readonly state: S };
 
-function reject(state: SimulationState, error: OperationError): OperationResult {
+function reject<S extends EngineState>(state: S, error: OperationError): OperationResult<S> {
   return { ok: false, error, state };
 }
 
-function replaceCharacter(state: SimulationState, updated: HumanCharacter): SimulationState {
+function replaceCharacter<S extends EngineState>(state: S, updated: HumanCharacter): S {
   return {
     ...state,
     characters: state.characters.map((character) => character.id === updated.id ? updated : character),
@@ -36,7 +36,7 @@ function validAmount(amount: number): boolean {
   return Number.isFinite(amount) && amount >= 0;
 }
 
-export function applyDamage(state: SimulationState, characterId: string, damage: number): OperationResult {
+export function applyDamage<S extends EngineState>(state: S, characterId: string, damage: number): OperationResult<S> {
   if (!validAmount(damage)) return reject(state, "invalid-amount");
   const character = state.characters.find((candidate) => candidate.id === characterId);
   if (!character) return reject(state, "character-not-found");
@@ -47,7 +47,7 @@ export function applyDamage(state: SimulationState, characterId: string, damage:
 }
 
 /** Valida y paga el coste energético; los efectos de acciones futuras quedan fuera. */
-export function spendEnergy(state: SimulationState, characterId: string, cost: number): OperationResult {
+export function spendEnergy<S extends EngineState>(state: S, characterId: string, cost: number): OperationResult<S> {
   if (!validAmount(cost)) return reject(state, "invalid-amount");
   const character = state.characters.find((candidate) => candidate.id === characterId);
   if (!character) return reject(state, "character-not-found");
@@ -57,7 +57,7 @@ export function spendEnergy(state: SimulationState, characterId: string, cost: n
 }
 
 /** Primitiva interna: no decide quién solicita el pack ni cuándo puede hacerlo. */
-export function consumePack(state: SimulationState, characterId: string): OperationResult {
+export function consumePack<S extends EngineState>(state: S, characterId: string): OperationResult<S> {
   const character = state.characters.find((candidate) => candidate.id === characterId);
   if (!character) return reject(state, "character-not-found");
   if (!isAlive(character)) return reject(state, "character-dead");
@@ -71,7 +71,7 @@ export function consumePack(state: SimulationState, characterId: string): Operat
 }
 
 /** Un humano vivo por unidad; el límite se conserva por destinatario y ronda. */
-export function administerTreatment(state: SimulationState, characterId: string): OperationResult {
+export function administerTreatment<S extends EngineState>(state: S, characterId: string): OperationResult<S> {
   const character = state.characters.find(candidate => candidate.id === characterId);
   if (!character) return reject(state, "character-not-found");
   if (!isAlive(character)) return reject(state, "character-dead");

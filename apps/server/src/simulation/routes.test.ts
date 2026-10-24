@@ -3,9 +3,9 @@ import { createInitialState, type SimulationState } from "./state.js";
 import { checkRouteRequirements, privateRouteViews, publicRouteViews, traverseRoute } from "./routes.js";
 
 const cases = [
-  ["unstable-corridor", 10, 0.35, 20],
-  ["ventilation", 20, 0.10, 5],
-  ["shoring", 30, 0.20, 10],
+  ["unstable-corridor", 20, 0.35, 20],
+  ["ventilation", 30, 0.10, 5],
+  ["shoring", 40, 0.20, 10],
 ] as const;
 
 test.each(cases)("%s: coste %i, umbral %f y daño %i", (route, cost, probability, damage) => {
@@ -63,7 +63,7 @@ test("con dos vivos ambos son víctimas; los fallecidos no pagan ni reciben dañ
   if (!result.ok) throw new Error(result.error);
   expect(result.victimIds).toEqual([state.characters[1]!.id, state.characters[3]!.id]);
   expect(result.state.characters.map((character) => [character.health, character.energy]))
-    .toEqual([[0, 100], [95, 80], [0, 100], [95, 80]]);
+    .toEqual([[0, 100], [95, 70], [0, 100], [95, 70]]);
 });
 
 test("con tres vivos se eligen dos vivos distintos incluso usando el extremo superior", () => {
@@ -80,7 +80,7 @@ test.each([[[], "no-living-characters"], [[0], "single-survivor-allowed"]] as co
   const result = traverseRoute(state, "ventilation", random);
   if (indices.length === 1) {
     expect(result.ok).toBe(true);
-    expect(result.state.characters[0]).toMatchObject({ health: 100, energy: 80 });
+    expect(result.state.characters[0]).toMatchObject({ health: 100, energy: 70 });
     expect(random).toHaveBeenCalledTimes(1);
   } else {
     expect(result).toEqual({ ok: false, state, error });
@@ -123,7 +123,7 @@ test("muerte por accidente queda pendiente sin aplicar costes ni daños", () => 
   const result = traverseRoute(state, "unstable-corridor", () => 0);
   expect(result.ok).toBe(true);
   expect(result.state.characters.map(c => c.health)).toEqual([0, 0, 20, 20]);
-  expect(result.state.characters.every(c => c.energy === 90)).toBe(true);
+  expect(result.state.characters.every(c => c.energy === 80)).toBe(true);
   expect(state.characters.every(c => c.health === 20 && c.energy === 100)).toBe(true);
 });
 
@@ -148,6 +148,6 @@ test("vistas autorizadas no contienen riesgos internos y solo Mantenimiento cono
     }
   }
   publicViews[0]!.energyCost = 999;
-  expect(publicRouteViews()[0]!.energyCost).toBe(10);
-  expect(traverseRoute(createInitialState(), "unstable-corridor", () => 0.99).state.characters[0]!.energy).toBe(90);
+  expect(publicRouteViews()[0]!.energyCost).toBe(20);
+  expect(traverseRoute(createInitialState(), "unstable-corridor", () => 0.99).state.characters[0]!.energy).toBe(80);
 });

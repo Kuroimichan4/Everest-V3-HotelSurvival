@@ -48,18 +48,15 @@ test("inventario agotado sigue visible y no permite entregar", () => {
   expect(html).toContain('<button disabled="">Entregar pack</button>');
 });
 
-test("otros roles conservan información común sin controles operativos", () => {
+test("otros roles no reciben el panel operativo de Botones", () => {
   const html = render(state(), false);
-  expect(html).toContain("Solo Botones vivo puede autorizar el reparto");
-  expect(html).toContain("Packs disponibles: 2");
-  expect(html).not.toContain("<select");
-  expect(html).not.toContain("Entregar pack");
+  expect(html).toBe("");
 });
 
 test("sesión no preparada y destinatario con energía completa explican su bloqueo", () => {
   expect(render(state(), true, false)).toContain("Esperando conexión y autenticación");
   expect(render(state(), true, false)).toContain('<button disabled="">Entregar pack</button>');
-  const view = state(); view.characters[0]!.energy = 100;
+  const view = state(); view.characters = view.characters.map(c => ({ ...c, energy: 100 }));
   expect(render(view)).toContain("El destinatario ya tiene 100 de energía.");
   expect(render(view)).toContain('<button disabled="">Entregar pack</button>');
 });
@@ -73,11 +70,10 @@ test("recargar con una entrega pendiente ofrece reintento y bloquea nuevas entre
   expect(html).toContain("Reintentar entrega pendiente");
 });
 
-test("sin humanos activos no hay destinatarios y la tabla distingue muerte de eliminación", () => {
+test("sin humanos activos no hay destinatarios ni tabla duplicada", () => {
   const view = state(); view.characters = view.characters.slice(2);
   const html = render(view);
   expect(html).toContain("No hay destinatarios vivos disponibles.");
   expect(html).toContain('<button disabled="">Entregar pack</button>');
-  expect(html).toContain("<td>Fallecido</td>");
-  expect(html).toContain("<td>Eliminado</td>");
+  expect(html).not.toContain("<table");
 });

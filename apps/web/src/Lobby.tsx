@@ -1,17 +1,9 @@
-import { RoundThree } from "./RoundThree";
-import type { RoundThreeView } from "@everest/shared";
-import { RoundTwo } from "./RoundTwo";
-import { Supplies } from "./Supplies";
-import { Medical } from "./Medical";
-import type { MedicalView, TreatmentInput, TreatmentReply } from "@everest/shared";
-import type { SuppliesView, PackInput, PackReply } from "@everest/shared";
-import type { RoundTwoView } from "@everest/shared";
-import { useEffect, useRef, useState } from "react";
-import { io, type Socket } from "socket.io-client";
-import type { ClientToServerEvents, PrivateRole, PublicRoom, RoomError, RoomReply, RoomSession, ServerToClientEvents, SessionCredential } from "@everest/shared";
-import { CharacterSheet } from "./CharacterSheet";
-import { RoundOne } from "./RoundOne";
-import type { OwnVote, PublicVote, RoundOneSummary } from "@everest/shared";
+import { useEffect, useReducer, useRef, useState } from "react";
+import { io } from "socket.io-client";
+import type { PublicRoom, OwnVote, RoomError, RoomReply, RoomSession, SessionCredential, PackInput, PackReply, TreatmentInput, TreatmentReply } from "@everest/shared";
+import { bindGameSocket, type GameSocket } from "./game-socket";
+import { activeScene, emptyGame, gameReducer, reasonLabel } from "./game-state";
+import { GameHeader, GameScreen } from "./GameScreen";
 
 const storageKey = "everest-room-session";
 const errors: Record<RoomError, string> = {
@@ -37,17 +29,12 @@ function readCredential(): SessionCredential | null {
 }
 
 export function Lobby() {
-  const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
+  const socketRef = useRef<GameSocket | null>(null);
   const credential = useRef<SessionCredential | null>(readCredential());
-  const [room, setRoom] = useState<PublicRoom | null>(null);
-  const [role, setRole] = useState<PrivateRole | null>(null);
-  const [vote, setVote] = useState<PublicVote | null>(null);
-  const [roundThree, setRoundThree] = useState<RoundThreeView | null>(null);
-  const [roundTwo, setRoundTwo] = useState<RoundTwoView | null>(null);
-  const [summary, setSummary] = useState<RoundOneSummary | null>(null);
-  const [supplies, setSupplies] = useState<SuppliesView | null>(null);
-  const [medical, setMedical] = useState<MedicalView | null>(null);
-  const [ownVote, setOwnVote] = useState<OwnVote | null>(null);
+  const [game, dispatch] = useReducer(gameReducer, emptyGame);
+  const { room, supplies } = game;
+  const setRoom = (value: PublicRoom | null) => dispatch({ type: "room", value });
+  const setOwnVote = (value: OwnVote | null) => dispatch({ type: "ownVote", value });
   const [votingBusy, setVotingBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
@@ -56,9 +43,11 @@ export function Lobby() {
   const [error, setError] = useState("");
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
+  const scene = activeScene(game);
+  useEffect(() => setError(""), [scene.round, scene.kind, scene.vote?.decisionId, scene.vote?.attemptId]);
 
   useEffect(() => {
-    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io({ autoConnect: false });
+    const socket: GameSocket = io({ autoConnect: false });
     socketRef.current = socket;
     let active = true;
     const accept = (result: RoomReply<RoomSession>) => {
@@ -73,8 +62,10 @@ export function Lobby() {
       try { sessionStorage.setItem(storageKey, JSON.stringify(result.value.credential)); }
       catch { setError("No se pudo guardar la sesión: una recarga podría impedir la reconexión."); }
     };
-    socket.on("connect", () => {
-      setConnected(true);
+    const unbind = bindGameSocket(socket, dispatch, {
+      participantId: () => credential.current?.participantId,
+      connect: () => {
+        setConnected(true);
       if (credential.current) {
         setBusy(true);
         socket.timeout(5000).emit("room:resume", credential.current, (err, reply) => {
@@ -83,25 +74,12 @@ export function Lobby() {
           else accept(reply);
         });
       }
-    });
-    socket.on("disconnect", () => { setConnected(false); setAuthenticated(false); setRole(null); setBusy(false); setVote(null); setSummary(null); setRoundTwo(null); setSupplies(null); setOwnVote(null); setVotingBusy(false); });
-    socket.on("connect_error", () => { setConnected(false); setError("No se pudo conectar con el servidor."); });
-    socket.on("room:updated", setRoom);
-    socket.on("vote:updated", setVote);
-    socket.on("round:completed", setSummary);
-    socket.on("round-two:updated", setRoundTwo);
-    socket.on("round-three:updated", setRoundThree);
-    socket.on("disconnect", () => setRoundThree(null));
-    socket.on("supplies:updated", setSupplies);
-    socket.on("medical:updated", setMedical);
-    socket.on("disconnect", () => setMedical(null));
-    socket.on("vote:own", setOwnVote);
-    socket.on("game:role-unavailable", () => setRole(null));
-    socket.on("game:role", (assignment) => {
-      if (assignment.participantId === credential.current?.participantId) setRole(assignment);
+      },
+      disconnect: () => { setConnected(false); setAuthenticated(false); setBusy(false); setVotingBusy(false); },
+      error: () => { setConnected(false); setError("No se pudo conectar con el servidor."); },
     });
     socket.connect();
-    return () => { active = false; socket.disconnect(); socketRef.current = null; };
+    return () => { active = false; unbind(); socket.disconnect(); socketRef.current = null; };
   }, []);
 
   function enter(kind: "create" | "join") {
@@ -144,7 +122,7 @@ export function Lobby() {
     socketRef.current.timeout(5000).emit("round:advance", (err, reply) => {
       setBusy(false);
       if (err) setError("No llegó la respuesta. Reconecta para recuperar el estado.");
-      else if (!reply.ok) setError("No se puede avanzar: " + reply.error);
+      else if (!reply.ok) setError(reasonLabel(reply.error));
     });
   }
 
@@ -154,8 +132,21 @@ export function Lobby() {
     socketRef.current.timeout(5000).emit(action === "advance" ? "round-three:advance" : "round-three:open", (err, reply) => {
       setBusy(false);
       if (err) setError("No llegó la respuesta. Reconecta para recuperar el estado.");
-      else if (!reply.ok) setError("El servidor rechazó la solicitud: " + reply.error);
+      else if (!reply.ok) setError(reasonLabel(reply.error));
     });
+  }
+
+  function roundFourAction(action: "advance" | "open" | "retry", preparationId?: string) {
+    const socket = socketRef.current;
+    if (!socket?.connected || !authenticated || busy) return;
+    setBusy(true); setError("");
+    const done = (err: Error | null, reply: import("@everest/shared").RouteActionReply) => {
+      setBusy(false);
+      if (err) setError("Sin confirmación. Reconecta para recuperar la evacuación.");
+      else if (!reply.ok) setError(reasonLabel(reply.error));
+    };
+    if (action === "retry") socket.timeout(5000).emit("round-four:retry", { preparationId: preparationId ?? "" }, done);
+    else socket.timeout(5000).emit(action === "advance" ? "round-four:advance" : "round-four:open", done);
   }
 
   function routeAction(action: "reveal" | "open") {
@@ -165,21 +156,44 @@ export function Lobby() {
     socketRef.current.timeout(5000).emit(action === "reveal" ? "route:reveal" : "route:open", (err, reply) => {
       setVotingBusy(false);
       if (err) { setError("No llegó la respuesta. Reconecta para recuperar el estado."); socketRef.current?.disconnect().connect(); }
-      else if (!reply.ok) setError("El servidor rechazó la solicitud: " + reply.error);
+      else if (!reply.ok) setError(reasonLabel(reply.error));
     });
   }
 
   function cast(optionId: string) {
+    const currentVote = activeScene(game).vote;
     const socket = socketRef.current;
-    if (!socket?.connected || !authenticated || !vote || votingBusy) return;
+    if (!socket?.connected || !authenticated || !currentVote || votingBusy) return;
     setVotingBusy(true);
     setError("");
-    socket.timeout(5000).emit("vote:cast", { decisionId: vote.decisionId, attemptId: vote.attemptId, optionId }, (err, reply) => {
+    socket.timeout(5000).emit("vote:cast", { decisionId: currentVote.decisionId, attemptId: currentVote.attemptId, optionId }, (err, reply) => {
       setVotingBusy(false);
       if (err) { setError("No llegó la confirmación del voto. Reconecta para recuperar su estado."); socket.disconnect().connect(); return; }
       if (reply.ok) setOwnVote(reply.own);
       else setError(reply.error === "vote-change-pending" ? "El cambio de voto todavía no está disponible."
         : "El servidor no ha aceptado el voto. Comprueba el intento y el estado actuales de la votación.");
+    });
+  }
+
+  function openTransport(preparationId: string) {
+    const socket = socketRef.current;
+    if (!socket?.connected || !authenticated || votingBusy) return;
+    setVotingBusy(true); setError("");
+    socket.timeout(5000).emit("transport:open", { preparationId }, (err, reply) => {
+      setVotingBusy(false);
+      if (err) setError("Sin confirmación. Reconecta para recuperar el estado del transporte.");
+      else if (!reply.ok) setError(reasonLabel(reply.error));
+    });
+  }
+
+  function retryRoute(decisionId: string) {
+    const socket = socketRef.current;
+    if (!socket?.connected || !authenticated || votingBusy) return;
+    setVotingBusy(true); setError("");
+    socket.timeout(5000).emit("route:retry", { decisionId }, (err, reply) => {
+      setVotingBusy(false);
+      if (err) setError("Sin confirmación. Reconecta para recuperar la selección.");
+      else if (!reply.ok) setError(reasonLabel(reply.error));
     });
   }
 
@@ -197,59 +211,35 @@ export function Lobby() {
 
   const count = room?.participants.filter((participant) => participant.connected).length ?? 0;
   const creator = room?.creatorId === credential.current?.participantId;
-  return (
-    <section className="connection-panel" aria-labelledby="lobby-title">
-      <h2 id="lobby-title">Sala multijugador</h2>
-      <p aria-live="polite">{connected ? "Conectado" : "Sin conexión"}</p>
+  if (room?.status === "started" && authenticated) return <GameScreen state={game} participantId={credential.current?.participantId ?? ""}
+    connected={connected} busy={busy || votingBusy} error={error} actions={{ onVote: cast, onRoute: routeAction,
+      onOpenThree: () => roundThreeAction("open"), onOpenFour: () => roundFourAction("open"), onRetryFour: id => roundFourAction("retry", id),
+      onAdvance: () => { if (supplies?.round === 3) roundFourAction("advance"); else if (supplies?.round === 2) roundThreeAction("advance"); else advance(); },
+      onOpenTransport: openTransport, onRetry: retryRoute, onGive: givePack, onTreat: treat }} />;
+  return <>
+    <GameHeader state={game} connected={connected} />
+    <section className="panel lobby-panel" aria-label="Sala multijugador">
+      <p className="eyebrow">SIMULACIÓN COOPERATIVA</p><h2>{hasSession && !authenticated ? "Recuperar partida" : room ? "El equipo se está reuniendo" : "Preparaos para sobrevivir"}</h2>
+      <p className="action-description">Cuatro personas, un hotel en crisis. Cada decisión cuenta.</p>
       {error && <p role="alert">{error}</p>}
       {!room && !hasSession && <div className="room-form">
-        <label>Nombre visible<input value={name} maxLength={40} onChange={(event) => setName(event.target.value)} /></label>
-        <button disabled={!connected || busy || !name.trim()} onClick={() => enter("create")}>Crear sala</button>
-        <label>Código de sala<input value={code} maxLength={12} onChange={(event) => setCode(event.target.value.toUpperCase())} /></label>
-        <button disabled={!connected || busy || !name.trim() || !code.trim()} onClick={() => enter("join")}>Unirse a sala</button>
+        <label>Tu nombre<input value={name} maxLength={40} onChange={event => setName(event.target.value)} autoComplete="nickname" /></label>
+        <div className="join-actions"><button disabled={!connected || busy || !name.trim()} onClick={() => enter("create")}>Crear sala</button>
+          <label>Código de sala<input value={code} maxLength={12} onChange={event => setCode(event.target.value.toUpperCase())} /></label>
+          <button className="secondary" disabled={!connected || busy || !name.trim() || !code.trim()} onClick={() => enter("join")}>Unirse a sala</button></div>
       </div>}
-      {hasSession && !authenticated && <div>
+      {hasSession && !authenticated && <div className="action-buttons">
         <button disabled={!connected || busy} onClick={() => socketRef.current?.disconnect().connect()}>Reintentar reconexión</button>
-        <button disabled={busy} onClick={() => {
-          try { sessionStorage.removeItem(storageKey); } catch { /* Puede estar deshabilitado. */ }
-          credential.current = null; setHasSession(false); setRoom(null); setRole(null); setError("");
+        <button className="secondary" disabled={busy} onClick={() => {
+          try { sessionStorage.removeItem(storageKey); } catch { /* La credencial puede no estar almacenada. */ }
+          credential.current = null; setHasSession(false); dispatch({ type: "clear" }); setError(""); socketRef.current?.disconnect().connect();
         }}>Olvidar credencial local</button>
-        <p>Olvidarla no libera la plaza reservada en el servidor.</p>
       </div>}
-      {room && <>
-        <h3>Información común de la sala</h3>
-        <p>Código: <strong>{room.code}</strong></p>
-        <p>{count}/4 participantes conectados · {room.status === "waiting" ? "Sala de espera" : "Partida iniciada"}</p>
-        <ol>{Array.from({ length: 4 }, (_, index) => {
-          const participant = room.participants[index];
-          return <li key={participant?.id ?? index}>{participant
-            ? `${participant.name}${participant.id === room.creatorId ? " (creador)" : ""} — ${participant.connected ? "conectado" : "desconectado"}`
-            : "Plaza libre"}</li>;
-        })}</ol>
-        {room.status === "waiting" && creator && <button disabled={!connected || !authenticated || busy || count !== 4} onClick={start}>Iniciar partida</button>}
-        {room.status === "started" && <>
-          <p aria-live="polite">Partida iniciada.{!role && (supplies?.characters.some(c => c.participantId === credential.current?.participantId && (c.health === 0 || c.eliminated))
-            ? " Tu personaje ha fallecido o ha sido eliminado; su ficha privada ya no está disponible." : " Recuperando tu ficha…")}</p>
-          {authenticated && role && <CharacterSheet sheet={role.sheet} />}
-          {authenticated && roundThree ? <RoundThree state={roundThree} own={ownVote} creator={creator}
-            enabled={connected && !!role && !!supplies?.characters.some(c => c.participantId === role.participantId && c.health > 0 && !c.eliminated)}
-            busy={busy || votingBusy} onOpen={() => roundThreeAction("open")} onVote={cast} /> : authenticated && vote && (roundTwo && vote.round === 2
-            ? <RoundTwo maintenance={role?.role === "maintenance"} creator={creator} onRouteAction={routeAction} state={roundTwo} vote={vote} own={ownVote} enabled={connected && !!role} busy={votingBusy} onVote={cast} />
-            : <RoundOne summary={summary} vote={vote} own={ownVote} enabled={connected && !!role} busy={votingBusy} onVote={cast} />)}
-          {authenticated && supplies && <Supplies key={supplies.gameId} state={supplies} bellhop={role?.role === "bellhop" && supplies.characters.some(c => c.participantId === role.participantId && c.health > 0 && !c.eliminated)}
-            enabled={connected && !!role} onGive={givePack} />}
-          {authenticated && medical && <Medical key={medical.gameId} state={medical}
-            medic={role?.role === "medic" && medical.characters.some(c => c.participantId === role.participantId && c.health > 0 && !c.eliminated)}
-            enabled={connected && !!role} onTreat={treat} />}
-          {authenticated && !roundThree && roundTwo?.phase === "completed" && (creator
-            ? <button disabled={!connected || busy} onClick={() => roundThreeAction("advance")}>Avanzar a ronda 3</button>
-            : <p>Esperando a que el anfitrión avance a la ronda 3.</p>)}
-          {authenticated && summary && !roundTwo && (creator
-            ? <button disabled={!connected || busy} onClick={advance}>Avanzar a ronda 2</button>
-            : <p>Esperando a que el creador avance a la ronda 2.</p>)}
-        </>}
+      {room?.status === "waiting" && <><div className="section-heading"><h3>Tu equipo</h3><span className="badge">{count}/4 conectados</span></div>
+        <div className="waiting-grid">{Array.from({ length: 4 }, (_, i) => { const p = room.participants[i]; return <div className="player-card" key={p?.id ?? `empty-${i}`}><strong>{p?.name ?? "Esperando compañero"}</strong><p className="muted">{p ? `${p.id === room.creatorId ? "Anfitrión" : "Participante"} / ${p.connected ? "Conectado" : "Desconectado"}` : "Plaza disponible"}</p></div>; })}</div>
+        {creator ? <button disabled={!connected || !authenticated || busy || count !== 4} onClick={start}>Iniciar partida</button> : <p className="muted">El anfitrión iniciará cuando estén los cuatro.</p>}
       </>}
-      <p className="notice">Versión de desarrollo: las salas se pierden al reiniciar el servidor. Disponibles las rondas 1, 2 y 3. La ronda 4 queda pendiente.</p>
     </section>
-  );
+    <footer className="app-footer">Everest V3 / Las salas se conservan hasta reiniciar el servidor.</footer>
+  </>;
 }

@@ -26,7 +26,8 @@ test("solo una ronda 2 completada permite transición; conserva todo el estado p
   expect(beginRoundThree(next)).toBe(next);
 });
 test.each([false, true])("NO_AGREEMENT fuerza galería sin daño directo del terremoto, accidente %s", accident => {
-  const state = beginRoundThree(completedTwo());
+  const completed = completedTwo();
+  const state = beginRoundThree({ ...completed, characters: completed.characters.map(c => ({ ...c, energy: 35 })) });
   const random = vi.fn(() => accident ? 0 : 0.99);
   const result = resolveRoundThreeChoice(state, { decisionId: "r3", outcome: "NO_AGREEMENT" }, random);
   expect(result.ok).toBe(true);

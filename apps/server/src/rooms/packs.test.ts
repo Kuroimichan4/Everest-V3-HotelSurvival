@@ -50,14 +50,14 @@ test("sesión, identidad de Botones y momento de consumo se validan en servidor"
 test.each([0, 1, 2, 3])("Botones puede entregar al participante %i, incluido sí mismo, hasta 100", index => {
   const f = setup(); f.finishVote("rescue");
   expect(f.give(f.input(index)).ok).toBe(true);
-  expect(f.view().characters[index]!.energy).toBe(85);
+  expect(f.view().characters[index]!.energy).toBe(75);
   expect(f.give(f.input(index)).ok).toBe(true);
   expect(f.view().characters[index]!.energy).toBe(100);
   expect(f.view().inventory.packs).toBe(6);
   const before = f.view();
   expect(f.give(f.input(index))).toEqual({ ok: false, error: "energy-full" });
   expect(f.view()).toEqual(before);
-  expect(f.view().characters.every((c, i) => c.health === 100 && c.energy === (i === index ? 100 : 60))).toBe(true);
+  expect(f.view().characters.every((c, i) => c.health === 100 && c.energy === (i === index ? 100 : 50))).toBe(true);
 });
 
 test("sin existencias se rechaza y un fallecido no puede recibir ni administrar packs", () => {
@@ -115,7 +115,7 @@ test("recursos actuales pasan a ronda 2 sin modificar la historia ni reabrir ven
   expect(f.give({ ...firstRequest, requestId: randomUUID() })).toEqual({ ok: false, error: "supplies-not-open" });
   const historyTwo = f.manager.roundTwoView(f.code)!;
   expect(f.give(f.input(0)).ok).toBe(true);
-  expect(f.view().characters[0]!.energy).toBe(75); // 60 + 25 - 25 - 10 + 25
+  expect(f.view().characters[0]!.energy).toBe(55); // 50 + 25 - 25 - 20 + 25
   expect(f.view().inventory.packs).toBe(6);
   expect(f.manager.roundTwoView(f.code)).toEqual(historyTwo);
   expect(f.manager.roundSummary(f.code)).toEqual(history);

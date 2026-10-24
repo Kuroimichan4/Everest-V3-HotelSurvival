@@ -47,7 +47,7 @@ test("muertos y eliminados no son candidatos, no pagan ni reciben daños", () =>
   if (!result.ok) throw new Error(result.error);
   expect(result.outcome.victimIds).toEqual(state.characters.slice(2).map(c => c.id));
   expect(result.state.characters.slice(0, 2)).toEqual(state.characters.slice(0, 2));
-  expect(result.state.characters.slice(2).map(c => [c.health, c.energy])).toEqual([[50, 90], [50, 90]]);
+  expect(result.state.characters.slice(2).map(c => [c.health, c.energy])).toEqual([[50, 80], [50, 80]]);
 });
 
 test("las víctimas se eligen al inicio, aunque humo por sí solo ya fuera mortal", () => {

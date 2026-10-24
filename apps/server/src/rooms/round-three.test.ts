@@ -23,6 +23,7 @@ function setup() {
     const room = (manager as unknown as { rooms: Map<string, { game: { state: SimulationState } }> }).rooms.get(code)!;
     room.game.state = change(room.game.state);
   };
+  setState(state => ({ ...state, characters: state.characters.map(c => ({ ...c, energy: 100 })) }));
   random.mockClear();
   return { manager, code, vote, setState, random };
 }
@@ -39,7 +40,7 @@ test.each([1, 2, 3, 4])("ronda 3: mayoría estricta de %i vivos, muertos excluid
   f.vote("fire-door", required);
   const view = f.manager.roundThreeView(f.code)!;
   expect(view.phase).toBe("completed");
-  expect(view.afterRoute!.characters.map(c => [c.health, c.energy])).toEqual(Array.from({ length: 4 }, (_, i) => [i < living ? 100 : 0, i < living ? 5 : 25]));
+  expect(view.afterRoute!.characters.map(c => [c.health, c.energy])).toEqual(Array.from({ length: 4 }, (_, i) => [i < living ? 100 : 0, i < living ? 70 : 100]));
 });
 
 test.each(["insufficient-energy", "crowbar-unavailable-pending", "fatal-environment-order-pending", "fatal-accident-order-pending"])("bloqueo %s conserva efectos previos y no repite resolución", error => {
@@ -53,12 +54,32 @@ test.each(["insufficient-energy", "crowbar-unavailable-pending", "fatal-environm
   f.manager.roundThreeAction("s0", "advance");
   const before = f.manager.suppliesView(f.code)!;
   f.random.mockReturnValue(0);
+  if (error === "insufficient-energy" || error === "crowbar-unavailable-pending") {
+    const opened = f.manager.roundThreeAction("s0", "open");
+    if (error === "insufficient-energy") expect(opened).toEqual({ ok: false, error: "no-available-routes" });
+    else {
+      expect(opened.ok).toBe(true);
+      const vote = f.manager.publicVote(f.code)!;
+      expect(f.manager.vote("s0", { decisionId: vote.decisionId, attemptId: vote.attemptId, optionId: "fire-door" })).toEqual({ ok: false, error: "invalid-option" });
+    }
+    expect(f.manager.roundThreeView(f.code)!.options.find(o => o.id === "fire-door")!.availability.status).toBe("unavailable");
+    expect(f.manager.suppliesView(f.code)!.characters).toEqual(before.characters);
+    expect(f.random).not.toHaveBeenCalled();
+    return;
+  }
   f.manager.roundThreeAction("s0", "open"); f.vote(route);
   const view = f.manager.roundThreeView(f.code)!;
   const fatal = error === "fatal-environment-order-pending" || error === "fatal-accident-order-pending";
   if (fatal) {
     expect(view.phase).toBe("completed");
     expect(view.afterRoute!.characters.slice(0, 2).every(c => c.health === 0)).toBe(true);
+  } else if (error === "insufficient-energy") {
+    expect(view).toMatchObject({ phase: "transport", movement: null, afterRoute: null });
+    const transport = f.manager.transportView(f.code)!.cases.at(-1)!;
+    expect(transport.phase).toBe("preparation");
+    expect(f.manager.suppliesView(f.code)).toEqual({ ...before, windowId: transport.preparationId });
+    f.manager.openTransport("s0", { preparationId: transport.preparationId });
+    expect(f.manager.transportView(f.code)!.cases.at(-1)).toMatchObject({ phase: "pending", reason: "more-than-two-exhausted" });
   } else {
     expect(view).toMatchObject({ phase: "blocked", blocked: error === "insufficient-energy" ? "transport-vote-pending" : error, movement: null, afterRoute: null });
     expect(f.manager.suppliesView(f.code)).toEqual({ ...before, windowId: null });

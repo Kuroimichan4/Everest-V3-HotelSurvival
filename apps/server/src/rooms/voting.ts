@@ -2,6 +2,7 @@ import type { OwnVote, PublicVote, VoteInput, VoteReply } from "@everest/shared"
 import { castVote, checkDeadline, createDecision, openNextAttempt } from "../voting/engine.js";
 import type { Decision, Voter, VoteOption } from "../voting/types.js";
 import { newId } from "./identity.js";
+import type { VotingPolicy } from "../voting/types.js";
 
 export interface VotingClock {
   now(): number;
@@ -16,9 +17,10 @@ export const systemClock: VotingClock = {
 export class RoomVoting {
   private decision: Decision;
   private cancel: (() => void) | undefined;
-  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void, private readonly round: 1 | 2 | 3 = 1, options: readonly VoteOption[] = [{ id: "rescue", label: "RESCATAR" }, { id: "abandon", label: "ABANDONAR" }]) {
+  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void, private readonly round: 1 | 2 | 3 | 4 = 1, options: readonly VoteOption[] = [{ id: "rescue", label: "RESCATAR" }, { id: "abandon", label: "ABANDONAR" }], policy?: VotingPolicy,
+    private readonly beforeRetry?: (decisionId: string) => readonly Voter[]) {
     const created = createDecision({ id: newId(), attemptId: newId(), now: clock.now(), electorate,
-      options });
+      options, ...(policy ? { policy } : {}) });
     if (!created.ok) throw new Error(created.error);
     this.decision = created.state;
     this.schedule();
@@ -39,7 +41,8 @@ export class RoomVoting {
     const checked = checkDeadline(before, before.attempts.at(-1)!.id, this.clock.now());
     if (checked.ok) this.decision = checked.state;
     if (this.decision.status === "awaiting-retry") {
-      const next = openNextAttempt(this.decision, newId(), this.clock.now());
+      const electorate = this.beforeRetry?.(this.decision.id);
+      const next = openNextAttempt(this.decision, newId(), this.clock.now(), electorate);
       if (next.ok) this.decision = next.state;
     }
     if (before !== this.decision) { this.schedule(); this.changed(); }
@@ -49,7 +52,7 @@ export class RoomVoting {
     const current = decision.attempts.at(-1)!;
     return { decisionId: decision.id, attemptId: current.id, round: this.round, attemptNumber: decision.attempts.length,
       deadline: current.deadline, serverNow: this.clock.now(), requiredVotes: current.requiredVotes,
-      status: decision.status === "closed" ? "closed" : "open",
+      status: decision.status === "open" ? "open" : "closed",
       result: decision.status !== "closed" ? null : decision.result.kind === "no-agreement" ? "NO_AGREEMENT"
         : decision.result.optionId === "rescue" ? "RESCUE_APPROVED" : decision.result.optionId === "abandon" ? "ABANDON_APPROVED" : null };
   }

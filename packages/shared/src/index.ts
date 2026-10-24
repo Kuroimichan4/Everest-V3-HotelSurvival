@@ -14,15 +14,23 @@ export interface PingResponse {
 
 export type RouteActionReply = { ok: true } | { ok: false; error: string };
 export type RouteId = "unstable-corridor" | "ventilation" | "shoring";
+export interface RouteAvailability { status: "available" | "with-help" | "unavailable"; reason: string | null }
+export interface RouteRecovery { decisionId: string; reason: string; forced: boolean }
+export interface FailedRouteSelection { round: 2 | 3; decisionId: string; outcome: string; reason: string; vote: PublicVote }
 export interface RouteChoiceView {
   phase: "preparation" | "voting" | "selected";
   ventilationRevealed: boolean;
-  options: { id: RouteId; name: string; energyCost: number; blocked: string | null }[];
+  options: { id: RouteId; name: string; energyCost: number; blocked: string | null; availability: RouteAvailability }[];
   vote: PublicVote | null;
   result: { decisionId: string; outcome: RouteId | "NO_AGREEMENT" } | null;
 }
 
 export interface ClientToServerEvents {
+  "round-four:advance": (ack: (reply: RouteActionReply) => void) => void;
+  "round-four:open": (ack: (reply: RouteActionReply) => void) => void;
+  "round-four:retry": (input: { preparationId: string }, ack: (reply: RouteActionReply) => void) => void;
+  "route:retry": (input: { decisionId: string }, ack: (reply: RouteActionReply) => void) => void;
+  "transport:open": (input: { preparationId: string }, ack: (reply: RouteActionReply) => void) => void;
   "round-three:advance": (ack: (reply: RouteActionReply) => void) => void;
   "round-three:open": (ack: (reply: RouteActionReply) => void) => void;
   "medical:treat": (input: TreatmentInput, ack: (reply: TreatmentReply) => void) => void;
@@ -39,6 +47,9 @@ export interface ClientToServerEvents {
 }
 
 export interface ServerToClientEvents {
+  "round-four:updated": (state: RoundFourView) => void;
+  "game:activity": (state: GameActivityView) => void;
+  "transport:updated": (state: TransportView) => void;
   "game:role-unavailable": () => void;
   "round-three:updated": (state: RoundThreeView) => void;
   "medical:updated": (state: MedicalView) => void;
@@ -51,6 +62,33 @@ export interface ServerToClientEvents {
   "room:updated": (room: PublicRoom) => void;
   "game:role": (assignment: PrivateRole) => void;
 }
+
+export interface GameActivityView {
+  gameId: string;
+  tools: { crowbar: "available" | "lost" };
+  entries: { id: string; round: 1 | 2 | 3 | 4; kind: "pack" | "treatment"; targetParticipantId: string; restored: number }[];
+}
+
+export interface TransportCaseView {
+  preparationId: string;
+  round: 1 | 2 | 3 | 4;
+  routeId: string;
+  routeName: string;
+  routeCost: number;
+  phase: "preparation" | "voting" | "selection" | "pending" | "completed" | "blocked" | "superseded";
+  reason: string | null;
+  exhaustedIds: string[];
+  eligibleIds: string[];
+  people: { participantId: string; name: string; energy: number }[];
+  options: { id: string; label: string; viable: boolean; carrierIds: string[]; carrierCost: number; authorizedVoterIds: string[] }[];
+  vote: PublicVote | null;
+  decisions: { stage: "transport" | "recipient"; vote: PublicVote; outcome: string | null }[];
+  transportedIds: string[];
+  abandonedIds: string[];
+  charges: { participantId: string; kind: "walking" | "carrier" | "transported"; routeEnergy: number; transportEnergy: number }[];
+  transfers: { participantId: string; items: { id: string; kind: string }[] }[];
+}
+export interface TransportView { cases: TransportCaseView[] }
 
 export type AssignedRole = "maintenance" | "medic" | "architect-engineer" | "bellhop";
 
@@ -105,7 +143,7 @@ export interface OwnVote { decisionId: string; attemptId: string; optionId: stri
 export interface PublicVote {
   decisionId: string;
   attemptId: string;
-  round: 1 | 2 | 3;
+  round: 1 | 2 | 3 | 4;
   attemptNumber: number;
   deadline: number;
   serverNow: number;
@@ -116,20 +154,20 @@ export interface PublicVote {
 export type VoteReply = { ok: true; own: OwnVote } | { ok: false; error: string };
 
 export interface PackInput { requestId: string; windowId: string; targetParticipantId: string }
-export interface TreatmentInput { requestId: string; gameId: string; round: 1 | 2 | 3; targetParticipantId: string }
+export interface TreatmentInput { requestId: string; gameId: string; round: 1 | 2 | 3 | 4; targetParticipantId: string }
 export type TreatmentReply = { ok: true; requestId: string } | { ok: false; error: string };
 export interface MedicalView {
   gameId: string;
-  round: 1 | 2 | 3;
+  round: 1 | 2 | 3 | 4;
   characters: RoundOneSummary["characters"];
   inventory: RoundOneSummary["inventory"];
-  treatments: { round: 1 | 2 | 3; participantId: string; healthRestored: number }[];
+  treatments: { round: 1 | 2 | 3 | 4; participantId: string; healthRestored: number }[];
 }
 export type PackReply = { ok: true; requestId: string } | { ok: false; error: string };
 /** Estado actual público, separado de las instantáneas históricas al terminar rutas. */
 export interface SuppliesView {
   gameId: string;
-  round: 1 | 2 | 3;
+  round: 1 | 2 | 3 | 4;
   windowId: string | null;
   movementBlocked?: string;
   characters: RoundOneSummary["characters"];
@@ -152,6 +190,8 @@ export interface RoundOneSummary {
 }
 
 export interface RoundTwoView {
+  recovery?: RouteRecovery;
+  failedSelections?: FailedRouteSelection[];
   movement: {
     status: "completed"; decisionId: string; routeId: RouteId; routeName: string;
     forced: boolean; microearthquake: boolean; accident: boolean; energyCost: number;
@@ -162,7 +202,7 @@ export interface RoundTwoView {
   npcId: "round-two-survivor";
   mobility: "walks-with-help";
   npc: "pending" | "rescued" | "abandoned";
-  phase: "rescue-vote" | "resolution-blocked" | "route-pending" | "movement-blocked" | "completed";
+  phase: "rescue-vote" | "resolution-blocked" | "route-pending" | "movement-blocked" | "transport-pending" | "completed";
   blocked: "insufficient-energy" | null;
   result: RescueOutcome | null;
   microearthquake: boolean;
@@ -172,10 +212,44 @@ export interface RoundTwoView {
 }
 
 export type RoundThreeRouteId = "fire-door" | "pipe-gallery" | "metal-debris";
+export type ExitRouteId = "revolving-door" | "exterior-crack";
+export type RoundFourNpcChoice = "abandon" | "assist" | "carry" | "medical-assist";
+/** Proyección pública explícita. Sin catálogo de riesgos, roles ni credenciales. */
+export interface RoundFourView {
+  round: 4;
+  preparationId: string;
+  phase: "npc-voting" | "preparation" | "exit-voting" | "transport" | "blocked" | "completed";
+  npc: {
+    encounter: "none" | "walking-assisted" | "immobile";
+    status: "absent" | "awaiting-decision" | "awaiting-effort" | "rescued" | "abandoned" | "dead";
+    choice: RoundFourNpcChoice | null;
+    message: string | null;
+    energyPerHuman: number;
+    medicalUnits: number;
+    options: { id: RoundFourNpcChoice; label: string; energyPerHuman: number; medicalUnits: number; available: boolean }[];
+    vote: PublicVote | null;
+  };
+  options: { id: ExitRouteId; name: string; energyCost: number; availability: RouteAvailability }[];
+  vote: PublicVote | null;
+  selection: { decisionId: string; outcome: ExitRouteId | "NO_AGREEMENT" } | null;
+  forced: boolean;
+  surcharge: number;
+  collapse: { affectedIds: string[]; deceasedIds: string[]; damage: number } | null;
+  blocked: string | null;
+  movement: {
+    requestId: string; routeId: ExitRouteId; energyCost: number; accident: boolean;
+    victims: { participantId: string; damage: number }[];
+    deceasedIds: string[]; escapedHumanIds: string[]; rescuedNpc: boolean;
+    characters: RoundOneSummary["characters"]; inventory: RoundOneSummary["inventory"];
+    crowbar: "available" | "lost";
+  } | null;
+}
 export interface RoundThreeView {
+  recovery?: RouteRecovery;
+  failedSelections?: FailedRouteSelection[];
   round: 3;
-  phase: "preparation" | "voting" | "completed" | "blocked";
-  options: { id: RoundThreeRouteId; name: string; description: string; energyCost: number }[];
+  phase: "preparation" | "voting" | "transport" | "completed" | "blocked";
+  options: { id: RoundThreeRouteId; name: string; description: string; energyCost: number; availability: RouteAvailability }[];
   vote: PublicVote | null;
   selection: { decisionId: string; outcome: RoundThreeRouteId | "NO_AGREEMENT" } | null;
   forced: boolean;
