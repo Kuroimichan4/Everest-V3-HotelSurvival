@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { io, type Socket } from "socket.io-client";
 import type { ClientToServerEvents, OwnVote, PublicVote, RoundOneSummary, RoomReply, RoomSession, ServerToClientEvents, VoteInput } from "@everest/shared";
 import { buildApp } from "../app.js";
@@ -30,11 +30,13 @@ function nextVote(client: Client, predicate: (vote: PublicVote) => boolean): Pro
   });
 }
 async function fixture(run: (context: {
+  routeRandom: ReturnType<typeof vi.fn<() => number>>;
   clock: TestClock; manager: RoomManager; connect: () => Promise<Client>;
   room: () => Promise<{ clients: Client[]; sessions: RoomSession[]; vote: PublicVote }>;
 }) => Promise<void>) {
   const clock = new TestClock();
-  const manager = new RoomManager(() => 0, clock);
+  const routeRandom = vi.fn(() => 0.99);
+  const manager = new RoomManager(() => 0, clock, routeRandom);
   const app = buildApp({ roomManager: manager });
   const all: Client[] = [];
   try {
@@ -58,7 +60,7 @@ async function fixture(run: (context: {
       expect(votes.every((vote) => JSON.stringify(vote) === JSON.stringify(votes[0]))).toBe(true);
       return { clients, sessions, vote: votes[0]! };
     }
-    await run({ clock, manager, connect, room });
+    await run({ clock, manager, connect, room, routeRandom });
   } finally { all.forEach((client) => client.disconnect()); await app.close(); expect(clock.tasks.size).toBe(0); }
 }
 const input = (vote: PublicVote, optionId = "rescue"): VoteInput => ({ decisionId: vote.decisionId, attemptId: vote.attemptId, optionId });
@@ -238,5 +240,308 @@ test("rechaza un voto fuera de plazo aunque el planificador aún no haya ejecuta
     clock.time = vote.deadline;
     expect(await cast(clients[0]!, vote)).toEqual({ ok: false, error: "expired" });
     expect(clock.tasks.size).toBe(1);
+  });
+});
+
+test.each(["ventilation", "shoring", "unstable-corridor", "NO_AGREEMENT", "ventilation-retry"])("5C.1: revelation, frozen options, recovery and result %s", async scenario => {
+  const outcome = scenario === "ventilation-retry" ? "ventilation" : scenario;
+  await fixture(async ({ room, manager, clock, connect }) => {
+    const first = await room();
+    const other = await room();
+    const host = first.clients[0]!;
+    const code = first.sessions[0]!.room.code;
+    const view = () => manager.roundTwoView(code)!;
+    expect(await host.timeout(2000).emitWithAck("route:open")).toEqual({ ok: false, error: "route-not-ready" });
+    for (const client of first.clients.slice(0, 3)) await cast(client, first.vote);
+    await host.timeout(2000).emitWithAck("round:advance");
+    const rescueVote = manager.publicVote(code)!;
+    for (const client of first.clients.slice(0, 3)) await cast(client, rescueVote);
+    const before = view();
+    expect(before.routeChoice).toMatchObject({ phase: "preparation", ventilationRevealed: false, vote: null, result: null });
+    expect(before.routeChoice!.options.map(o => o.id)).toEqual(["unstable-corridor", "shoring"]);
+    expect(JSON.stringify(before)).not.toContain('"ventilation"');
+    expect(await cast(host, rescueVote, "ventilation")).toMatchObject({ ok: false });
+    const preparationSnapshot = new Promise<import("@everest/shared").RoundTwoView>(resolve => host.once("round-two:updated", resolve));
+    await host.timeout(2000).emitWithAck("room:resume", first.sessions[0]!.credential);
+    expect(await preparationSnapshot).toEqual(before);
+    for (const client of other.clients.slice(0, 3)) await cast(client, other.vote);
+    await other.clients[0]!.timeout(2000).emitWithAck("round:advance");
+    const otherRescue = manager.publicVote(other.sessions[0]!.room.code)!;
+    for (const client of other.clients.slice(0, 3)) await cast(client, otherRescue);
+    const otherBefore = manager.roundTwoView(other.sessions[0]!.room.code);
+    const maintenance = first.clients.find(c => manager.privateRole(c.id!)?.role === "maintenance")!;
+    expect(await host.timeout(2000).emitWithAck("route:reveal")).toEqual({ ok: false, error: "not-authorized" });
+    const outsider = await connect();
+    expect(await outsider.timeout(2000).emitWithAck("route:reveal")).toEqual({ ok: false, error: "invalid-session" });
+    expect(await first.clients[1]!.timeout(2000).emitWithAck("route:open")).toEqual({ ok: false, error: "not-creator" });
+    const otherUpdates: unknown[] = [];
+    other.clients[0]!.on("round-two:updated", state => otherUpdates.push(state));
+    if (outcome === "ventilation") {
+      const updates = first.clients.map(client => new Promise<import("@everest/shared").RoundTwoView>(resolve => client.once("round-two:updated", resolve)));
+      expect(await maintenance.timeout(2000).emitWithAck("route:reveal")).toEqual({ ok: true });
+      const states = await Promise.all(updates);
+      expect(new Set(states.map(state => JSON.stringify(state))).size).toBe(1);
+      expect(states[0]!.routeChoice!.options.map(o => o.id)).toContain("ventilation");
+      expect(await maintenance.timeout(2000).emitWithAck("route:reveal")).toEqual({ ok: true });
+      expect(view()).toEqual(states[0]);
+    }
+    expect(await host.timeout(2000).emitWithAck("route:open")).toEqual({ ok: true });
+    let vote = manager.publicVote(code)!;
+    expect(vote.deadline - vote.serverNow).toBe(60_000);
+    expect(vote.requiredVotes).toBe(3);
+    expect(await host.timeout(2000).emitWithAck("route:open")).toEqual({ ok: true });
+    expect(manager.publicVote(code)).toEqual(vote);
+    if (outcome !== "ventilation") {
+      expect(await cast(host, vote, "ventilation")).toEqual({ ok: false, error: "invalid-option" });
+      expect(await maintenance.timeout(2000).emitWithAck("route:reveal")).toEqual({ ok: false, error: "preparation-closed" });
+    }
+    expect(await cast(other.clients[0]!, vote, "shoring")).toEqual({ ok: false, error: "wrong-decision" });
+    const forgedRouteVote = { ...input(vote, "shoring"), participantId: first.sessions[1]!.credential.participantId };
+    expect(await host.timeout(2000).emitWithAck("vote:cast", forgedRouteVote)).toEqual({ ok: false, error: "invalid-input" });
+    if (scenario === "ventilation-retry") {
+      const firstAttempt = vote;
+      await cast(host, vote, "shoring");
+      clock.advance(60_000);
+      vote = manager.publicVote(code)!;
+      expect(vote.attemptNumber).toBe(2);
+      expect(vote.deadline - vote.serverNow).toBe(30_000);
+      expect(await cast(host, firstAttempt, "ventilation")).toEqual({ ok: false, error: "wrong-attempt" });
+      expect(manager.votingSession(host.id!)!.own.optionId).toBeNull();
+    }
+    if (outcome === "NO_AGREEMENT") {
+      clock.advance(60_000);
+      vote = manager.publicVote(code)!;
+      expect(vote.attemptNumber).toBe(2);
+      expect(vote.deadline - vote.serverNow).toBe(30_000);
+      expect(await cast(host, before.routeChoice!.vote ?? rescueVote, "shoring")).toEqual({ ok: false, error: "wrong-decision" });
+      clock.advance(30_000);
+    } else {
+      expect((await cast(host, vote, outcome)).ok).toBe(true);
+      expect((await cast(host, vote, outcome)).ok).toBe(true);
+      const active = view();
+      const restoredOwn = new Promise<OwnVote>(resolve => host.once("vote:own", resolve));
+      await host.timeout(2000).emitWithAck("room:resume", first.sessions[0]!.credential);
+      expect((await restoredOwn).optionId).toBe(outcome);
+      expect(view()).toEqual(active);
+      await cast(first.clients[1]!, vote, outcome);
+      expect(manager.publicVote(code)!.status).toBe("open");
+      await cast(first.clients[2]!, vote, outcome);
+    }
+    const final = view();
+    expect(final.routeChoice).toMatchObject({ phase: "selected", result: { decisionId: vote.decisionId, outcome } });
+    const cost = outcome === "ventilation" ? 20 : outcome === "shoring" ? 30 : 10;
+    expect(final.phase).toBe("completed");
+    expect(final.characters).toEqual(before.characters.map(c => ({ ...c, energy: c.energy - cost, health: c.health - (outcome === "NO_AGREEMENT" ? 10 : 0) })));
+    expect(final.movement).toMatchObject({ status: "completed", accident: false, energyCost: cost });
+    expect(final.inventory).toEqual(before.inventory);
+    expect(final.microearthquake).toBe(false);
+    expect(await cast(first.clients[3]!, vote, "shoring")).toEqual({ ok: false, error: "closed" });
+    const disconnected = new Promise<void>(resolve => first.clients[1]!.once("room:updated", () => resolve()));
+    host.disconnect(); await disconnected;
+    const replacement = await connect();
+    const restored = new Promise<import("@everest/shared").RoundTwoView>(resolve => replacement.once("round-two:updated", resolve));
+    expect((await replacement.timeout(2000).emitWithAck("room:resume", first.sessions[0]!.credential)).ok).toBe(true);
+    expect(await restored).toEqual(final);
+    expect(manager.privateRole(replacement.id!)).not.toBeNull();
+    expect(await replacement.timeout(2000).emitWithAck("route:open")).toEqual({ ok: true });
+    clock.advance(90_000);
+    expect(view()).toEqual({ ...final, routeChoice: { ...final.routeChoice!, vote: { ...final.routeChoice!.vote!, serverNow: clock.now() } } });
+    await other.clients[0]!.timeout(2000).emitWithAck("client:ping");
+    expect(otherUpdates).toEqual([]);
+    expect(manager.roundTwoView(other.sessions[0]!.room.code)).toEqual(otherBefore);
+    const serialized = JSON.stringify(final);
+    expect(serialized).not.toMatch(/probability|danger|LOW|BAJO|0\.1|10 %|knowledge|objective|token/);
+    for (const option of final.routeChoice!.options) expect(Object.keys(option).sort()).toEqual(["blocked", "energyCost", "id", "name"]);
+    for (const client of first.clients.slice(1)) expect(JSON.stringify(manager.privateRole(client.id!))).not.toMatch(/LOW|BAJO|10 %|0\.1/);
+  });
+});
+
+
+function nextRoundTwo(client: Client, predicate: (state: import("@everest/shared").RoundTwoView) => boolean) {
+  return new Promise<import("@everest/shared").RoundTwoView>((resolve, reject) => {
+    const timer = setTimeout(() => { client.off("round-two:updated", listener); reject(new Error("Missing round two summary")); }, 2000);
+    function listener(state: import("@everest/shared").RoundTwoView) {
+      if (predicate(state)) { clearTimeout(timer); client.off("round-two:updated", listener); resolve(state); }
+    }
+    client.on("round-two:updated", listener);
+  });
+}
+
+const movementScenarios = [
+  ...(["ventilation", "shoring", "unstable-corridor"] as const).flatMap(route => [false, true].map(accident => ({ route, accident, rescueAgreement: true }))),
+  ...[false, true].flatMap(accident => [false, true].map(rescueAgreement => ({ route: "NO_AGREEMENT" as const, accident, rescueAgreement }))),
+];
+test.each(movementScenarios)("5C.2 synchronized movement $route / accident $accident / rescue agreement $rescueAgreement", async ({ route, accident, rescueAgreement }) => {
+  await fixture(async ({ room, manager, clock, connect, routeRandom }) => {
+    routeRandom.mockReturnValue(accident ? 0 : 0.99);
+    const first = await room();
+    const second = await room();
+    async function prepare(target: typeof first, agreed: boolean) {
+      for (const client of target.clients.slice(0, 3)) await cast(client, target.vote);
+      await target.clients[0]!.timeout(2000).emitWithAck("round:advance");
+      if (agreed) {
+        const rescueVote = manager.publicVote(target.sessions[0]!.room.code)!;
+        for (const client of target.clients.slice(0, 3)) await cast(client, rescueVote);
+      } else { clock.advance(60_000); clock.advance(30_000); }
+    }
+    // Finish the other rescue before advancing clocks in the first room.
+    await prepare(second, true);
+    await prepare(first, rescueAgreement);
+    const host = first.clients[0]!;
+    const code = first.sessions[0]!.room.code;
+    const secondBefore = manager.roundTwoView(second.sessions[0]!.room.code)!;
+    const before = manager.roundTwoView(code)!;
+    if (route === "ventilation") {
+      const maintenance = first.clients.find(c => manager.privateRole(c.id!)?.role === "maintenance")!;
+      expect((await maintenance.timeout(2000).emitWithAck("route:reveal")).ok).toBe(true);
+    }
+    expect((await host.timeout(2000).emitWithAck("route:open")).ok).toBe(true);
+    const vote = manager.publicVote(code)!;
+    const summaries = first.clients.map(client => nextRoundTwo(client, state => state.phase === "completed"));
+    if (route === "NO_AGREEMENT") { clock.advance(60_000); clock.advance(30_000); }
+    else for (const client of first.clients.slice(0, 3)) expect((await cast(client, vote, route)).ok).toBe(true);
+    const results = await Promise.all(summaries);
+    expect(new Set(results.map(state => JSON.stringify(state))).size).toBe(1);
+    const final = results[0]!;
+    const actualRoute = route === "NO_AGREEMENT" ? "unstable-corridor" : route;
+    const cost = actualRoute === "ventilation" ? 20 : actualRoute === "shoring" ? 30 : 10;
+    const damage = actualRoute === "ventilation" ? 5 : actualRoute === "shoring" ? 10 : 20;
+    expect(final.movement).toMatchObject({ status: "completed", routeId: actualRoute, forced: route === "NO_AGREEMENT", microearthquake: route === "NO_AGREEMENT", energyCost: cost, accident });
+    if (final.movement?.status !== "completed") throw new Error("Missing movement");
+    expect(final.movement.victims).toEqual(accident ? first.sessions.slice(0, 2).map(session => ({ participantId: session.credential.participantId, name: session.room.participants.find(p => p.id === session.credential.participantId)!.name, damage })) : []);
+    expect(final.characters.map(c => [c.health, c.energy])).toEqual(before.characters.map((c, i) => [c.health - (route === "NO_AGREEMENT" ? 10 : 0) - (accident && i < 2 ? damage : 0), c.energy - cost]));
+    expect(final.microearthquake).toBe(!rescueAgreement);
+    expect(final.npc).toBe(rescueAgreement ? "rescued" : "abandoned");
+    expect(final.previousNpc).toBe("rescued");
+    expect(final.inventory).toEqual(before.inventory);
+    expect(routeRandom).toHaveBeenCalledTimes(accident ? 3 : 1);
+    // Closing events, duplicate votes, opening again and resume never rerun the movement.
+    await cast(first.clients[3]!, manager.publicVote(code)!, actualRoute);
+    await host.timeout(2000).emitWithAck("route:open");
+    const disconnected = new Promise<void>(resolve => first.clients[1]!.once("room:updated", () => resolve()));
+    host.disconnect(); await disconnected;
+    const replacement = await connect();
+    const restored = nextRoundTwo(replacement, state => state.phase === "completed");
+    expect((await replacement.timeout(2000).emitWithAck("room:resume", first.sessions[0]!.credential)).ok).toBe(true);
+    expect(await restored).toEqual(final);
+    expect(manager.privateRole(replacement.id!)).not.toBeNull();
+    clock.advance(90_000);
+    expect(manager.roundTwoView(code)!.movement).toEqual(final.movement);
+    expect(manager.roundTwoView(code)!.characters).toEqual(final.characters);
+    expect(routeRandom).toHaveBeenCalledTimes(accident ? 3 : 1);
+    expect(manager.roundTwoView(second.sessions[0]!.room.code)).toEqual(secondBefore);
+    expect(JSON.stringify(final)).not.toMatch(/probability|danger|LOW|BAJO|random|0\.1|token|knowledge|objective|characterId/);
+    expect(await replacement.timeout(2000).emitWithAck("round:advance")).toEqual({ ok: false, error: "round-not-ready" });
+  });
+});
+
+test("5C.2 blocked movement persists without partial effects or another roll", async () => {
+  await fixture(async ({ room, manager, routeRandom, clock }) => {
+    routeRandom.mockReturnValue(NaN);
+    const { clients, sessions, vote } = await room();
+    const host = clients[0]!;
+    const code = sessions[0]!.room.code;
+    for (const client of clients.slice(0, 3)) await cast(client, vote);
+    await host.timeout(2000).emitWithAck("round:advance");
+    const rescueVote = manager.publicVote(code)!;
+    for (const client of clients.slice(0, 3)) await cast(client, rescueVote);
+    const before = manager.roundTwoView(code)!;
+    await host.timeout(2000).emitWithAck("route:open");
+    const blocked = clients.map(client => nextRoundTwo(client, state => state.phase === "movement-blocked"));
+    clock.advance(60_000); clock.advance(30_000);
+    const states = await Promise.all(blocked);
+    expect(new Set(states.map(s => JSON.stringify(s))).size).toBe(1);
+    const final = states[0]!;
+    expect(final.movement).toMatchObject({ status: "blocked", reason: "invalid-random" });
+    expect(final.characters).toEqual(before.characters);
+    expect(final.inventory).toEqual(before.inventory);
+    expect(routeRandom).toHaveBeenCalledTimes(1);
+    const restored = nextRoundTwo(host, state => state.phase === "movement-blocked");
+    await host.timeout(2000).emitWithAck("room:resume", sessions[0]!.credential);
+    expect(await restored).toEqual(final);
+    await host.timeout(2000).emitWithAck("route:open");
+    await cast(clients[3]!, manager.publicVote(code)!, "unstable-corridor");
+    expect(routeRandom).toHaveBeenCalledTimes(1);
+    expect(manager.roundTwoView(code)).toEqual(final);
+  });
+});
+
+
+function nextSupplies(client: Client, predicate: (state: import("@everest/shared").SuppliesView) => boolean) {
+  return new Promise<import("@everest/shared").SuppliesView>((resolve, reject) => {
+    const timer = setTimeout(() => { client.off("supplies:updated", listener); reject(new Error("Missing supplies update")); }, 2000);
+    function listener(state: import("@everest/shared").SuppliesView) {
+      if (predicate(state)) { clearTimeout(timer); client.off("supplies:updated", listener); resolve(state); }
+    }
+    client.on("supplies:updated", listener);
+  });
+}
+
+test.each([1, 2] as const)("6A: four sockets, current supplies, historical summary and F5 after round %i", async round => {
+  await fixture(async ({ room, manager, connect }) => {
+    const first = await room();
+    const other = await room();
+    const code = first.sessions[0]!.room.code;
+    for (const client of first.clients.slice(0, 3)) await cast(client, first.vote);
+    if (round === 2) {
+      await first.clients[0]!.timeout(2000).emitWithAck("round:advance");
+      const rescue = manager.publicVote(code)!;
+      for (const client of first.clients.slice(0, 3)) await cast(client, rescue);
+      await first.clients[0]!.timeout(2000).emitWithAck("route:open");
+      const route = manager.publicVote(code)!;
+      for (const client of first.clients.slice(0, 3)) await cast(client, route, "unstable-corridor");
+    }
+    const bellhopIndex = first.clients.findIndex(client => manager.privateRole(client.id!)?.role === "bellhop");
+    const bellhop = first.clients[bellhopIndex]!;
+    const before = manager.suppliesView(code)!;
+    const history = round === 1 ? manager.roundSummary(code) : manager.roundTwoView(code);
+    const otherBefore = manager.suppliesView(other.sessions[0]!.room.code);
+    const otherUpdates: unknown[] = [];
+    other.clients[0]!.on("supplies:updated", state => otherUpdates.push(state));
+    const request = { requestId: crypto.randomUUID(), windowId: before.windowId!, targetParticipantId: first.sessions[0]!.credential.participantId };
+    for (const client of first.clients.filter(client => client !== bellhop)) expect(await client.timeout(2000).emitWithAck("pack:give", request)).toEqual({ ok: false, error: "not-authorized" });
+    const updates = first.clients.map(client => nextSupplies(client, state => state.inventory.packs === 7));
+    const replies = await Promise.all([bellhop.timeout(2000).emitWithAck("pack:give", request), bellhop.timeout(2000).emitWithAck("pack:give", request)]);
+    expect(replies.every(reply => reply.ok)).toBe(true);
+    const states = await Promise.all(updates);
+    expect(new Set(states.map(state => JSON.stringify(state))).size).toBe(1);
+    const final = states[0]!;
+    expect(final.characters).toEqual(before.characters.map((c, i) => i === 0 ? { ...c, energy: c.energy + 25 } : c));
+    expect(final.inventory).toEqual({ ...before.inventory, packs: 7 });
+    expect(round === 1 ? manager.roundSummary(code) : manager.roundTwoView(code)).toEqual(history);
+    const disconnected = new Promise<void>(resolve => first.clients[0]!.once("room:updated", () => resolve()));
+    bellhop.disconnect(); await disconnected;
+    const replacement = await connect();
+    const restored = nextSupplies(replacement, state => state.round === round);
+    expect((await replacement.timeout(2000).emitWithAck("room:resume", first.sessions[bellhopIndex]!.credential)).ok).toBe(true);
+    expect(await restored).toEqual(final);
+    expect(await replacement.timeout(2000).emitWithAck("pack:give", request)).toEqual({ ok: true, requestId: request.requestId });
+    expect(manager.suppliesView(code)).toEqual(final);
+    expect(manager.privateRole(replacement.id!)?.role).toBe("bellhop");
+    expect(manager.suppliesView(other.sessions[0]!.room.code)).toEqual(otherBefore);
+    await other.clients[0]!.timeout(2000).emitWithAck("client:ping");
+    expect(otherUpdates).toEqual([]);
+    expect(JSON.stringify(final)).not.toMatch(/role|knowledge|objective|characterId|token|probability|danger|random/);
+  });
+});
+
+test("6A: concurrent requests cannot spend the same last pack", async () => {
+  await fixture(async ({ room, manager }) => {
+    const { clients, sessions, vote } = await room();
+    const code = sessions[0]!.room.code;
+    for (const client of clients.slice(0, 3)) await cast(client, vote);
+    const bellhop = clients.find(client => manager.privateRole(client.id!)?.role === "bellhop")!;
+    const windowId = manager.suppliesView(code)!.windowId!;
+    const input = (index: number) => ({ requestId: crypto.randomUUID(), windowId, targetParticipantId: sessions[index]!.credential.participantId });
+    for (const index of [0, 0, 1, 1, 2, 2, 3]) expect((await bellhop.timeout(2000).emitWithAck("pack:give", input(index))).ok).toBe(true);
+    expect(manager.suppliesView(code)!.inventory.packs).toBe(1);
+    const updates = clients.map(client => nextSupplies(client, state => state.inventory.packs === 0));
+    const replies = await Promise.all([bellhop.timeout(2000).emitWithAck("pack:give", input(3)), bellhop.timeout(2000).emitWithAck("pack:give", input(3))]);
+    expect(replies.filter(reply => reply.ok)).toHaveLength(1);
+    expect(replies.find(reply => !reply.ok)).toEqual({ ok: false, error: "no-packs" });
+    const states = await Promise.all(updates);
+    expect(new Set(states.map(state => JSON.stringify(state))).size).toBe(1);
+    expect(states[0]!.inventory.packs).toBe(0);
+    expect(states[0]!.characters.every(c => c.energy === 100)).toBe(true);
   });
 });

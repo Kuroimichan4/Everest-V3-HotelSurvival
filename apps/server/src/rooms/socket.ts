@@ -5,7 +5,12 @@ import { RoomManager } from "./manager.js";
 export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEvents>, manager = new RoomManager()): () => void {
   const channel = (code: string) => `room:${code}`;
   const publish = (room: PublicRoom) => { io.to(channel(room.code)).emit("room:updated", room); };
+  manager.onSuppliesChanged = (code) => {
+    const supplies = manager.suppliesView(code);
+    if (supplies) io.to(channel(code)).emit("supplies:updated", supplies);
+  };
   manager.onVotingChanged = (code) => {
+    manager.onSuppliesChanged(code);
     const vote = manager.publicVote(code);
     if (vote) io.to(channel(code)).emit("vote:updated", vote);
     const roundTwo = manager.roundTwoView(code);
@@ -15,6 +20,8 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
   };
   const sendVoting = (socketId: string) => {
     const state = manager.votingSession(socketId);
+    const supplies = manager.suppliesSession(socketId);
+    if (supplies) io.sockets.sockets.get(socketId)?.emit("supplies:updated", supplies);
     const roundTwo = manager.roundTwoSession(socketId);
     if (roundTwo) io.sockets.sockets.get(socketId)?.emit("round-two:updated", roundTwo);
     const summary = manager.summarySession(socketId);
@@ -26,6 +33,11 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
   };
 
   io.on("connection", (socket) => {
+    socket.on("pack:give", (input, ack) => {
+      if (typeof ack === "function") ack(manager.givePack(socket.id, input));
+    });
+    socket.on("route:reveal", (ack) => { if (typeof ack === "function") ack(manager.routeAction(socket.id, "reveal")); });
+    socket.on("route:open", (ack) => { if (typeof ack === "function") ack(manager.routeAction(socket.id, "open")); });
     socket.on("round:advance", (ack) => {
       if (typeof ack === "function") ack(manager.advanceRound(socket.id));
     });

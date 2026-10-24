@@ -1,6 +1,6 @@
 import type { OwnVote, PublicVote, VoteInput, VoteReply } from "@everest/shared";
 import { castVote, checkDeadline, createDecision, openNextAttempt } from "../voting/engine.js";
-import type { Decision, Voter } from "../voting/types.js";
+import type { Decision, Voter, VoteOption } from "../voting/types.js";
 import { newId } from "./identity.js";
 
 export interface VotingClock {
@@ -16,9 +16,9 @@ export const systemClock: VotingClock = {
 export class RoomVoting {
   private decision: Decision;
   private cancel: (() => void) | undefined;
-  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void, private readonly round: 1 | 2 = 1) {
+  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void, private readonly round: 1 | 2 = 1, options: readonly VoteOption[] = [{ id: "rescue", label: "RESCATAR" }, { id: "abandon", label: "ABANDONAR" }]) {
     const created = createDecision({ id: newId(), attemptId: newId(), now: clock.now(), electorate,
-      options: [{ id: "rescue", label: "RESCATAR" }, { id: "abandon", label: "ABANDONAR" }] });
+      options });
     if (!created.ok) throw new Error(created.error);
     this.decision = created.state;
     this.schedule();
@@ -51,7 +51,10 @@ export class RoomVoting {
       deadline: current.deadline, serverNow: this.clock.now(), requiredVotes: current.requiredVotes,
       status: decision.status === "closed" ? "closed" : "open",
       result: decision.status !== "closed" ? null : decision.result.kind === "no-agreement" ? "NO_AGREEMENT"
-        : decision.result.optionId === "rescue" ? "RESCUE_APPROVED" : "ABANDON_APPROVED" };
+        : decision.result.optionId === "rescue" ? "RESCUE_APPROVED" : decision.result.optionId === "abandon" ? "ABANDON_APPROVED" : null };
+  }
+  selectedOption(): string | "NO_AGREEMENT" | null {
+    return this.decision.status !== "closed" ? null : this.decision.result.kind === "no-agreement" ? "NO_AGREEMENT" : this.decision.result.optionId;
   }
   ownView(participantId: string): OwnVote {
     const current = this.decision.attempts.at(-1)!;

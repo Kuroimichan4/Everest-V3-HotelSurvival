@@ -16,6 +16,7 @@ export interface SharedInventory {
 export interface SimulationState {
   readonly currentRound: 1 | 2;
   readonly roundTwo?: {
+    readonly movement?: import("./round-two-movement.js").MovementResolution;
     readonly npcId: "round-two-survivor";
     readonly resolution: SimulationState["roundOne"];
     readonly blocked: "insufficient-energy" | null;

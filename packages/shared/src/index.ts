@@ -12,7 +12,20 @@ export interface PingResponse {
   ok: true;
 }
 
+export type RouteActionReply = { ok: true } | { ok: false; error: string };
+export type RouteId = "unstable-corridor" | "ventilation" | "shoring";
+export interface RouteChoiceView {
+  phase: "preparation" | "voting" | "selected";
+  ventilationRevealed: boolean;
+  options: { id: RouteId; name: string; energyCost: number; blocked: string | null }[];
+  vote: PublicVote | null;
+  result: { decisionId: string; outcome: RouteId | "NO_AGREEMENT" } | null;
+}
+
 export interface ClientToServerEvents {
+  "pack:give": (input: PackInput, ack: (reply: PackReply) => void) => void;
+  "route:reveal": (ack: (reply: RouteActionReply) => void) => void;
+  "route:open": (ack: (reply: RouteActionReply) => void) => void;
   "round:advance": (ack: (reply: VoteReply) => void) => void;
   "vote:cast": (input: VoteInput, ack: (reply: VoteReply) => void) => void;
   "client:ping": (acknowledge: (response: PingResponse) => void) => void;
@@ -23,6 +36,7 @@ export interface ClientToServerEvents {
 }
 
 export interface ServerToClientEvents {
+  "supplies:updated": (state: SuppliesView) => void;
   "round-two:updated": (state: RoundTwoView) => void;
   "round:completed": (summary: RoundOneSummary) => void;
   "vote:updated": (vote: PublicVote) => void;
@@ -95,6 +109,17 @@ export interface PublicVote {
 }
 export type VoteReply = { ok: true; own: OwnVote } | { ok: false; error: string };
 
+export interface PackInput { requestId: string; windowId: string; targetParticipantId: string }
+export type PackReply = { ok: true; requestId: string } | { ok: false; error: string };
+/** Estado actual público, separado de las instantáneas históricas al terminar rutas. */
+export interface SuppliesView {
+  gameId: string;
+  round: 1 | 2;
+  windowId: string | null;
+  characters: RoundOneSummary["characters"];
+  inventory: RoundOneSummary["inventory"];
+}
+
 export type RescueOutcome = NonNullable<PublicVote["result"]>;
 /** Vista común sin roles, conocimientos ni identificadores internos. */
 export interface RoundOneSummary {
@@ -111,11 +136,17 @@ export interface RoundOneSummary {
 }
 
 export interface RoundTwoView {
+  movement: {
+    status: "completed"; decisionId: string; routeId: RouteId; routeName: string;
+    forced: boolean; microearthquake: boolean; accident: boolean; energyCost: number;
+    victims: { participantId: string; name: string; damage: number }[];
+  } | { status: "blocked"; decisionId: string; reason: string } | null;
+  routeChoice: RouteChoiceView | null;
   round: 2;
   npcId: "round-two-survivor";
   mobility: "walks-with-help";
   npc: "pending" | "rescued" | "abandoned";
-  phase: "rescue-vote" | "resolution-blocked" | "route-pending";
+  phase: "rescue-vote" | "resolution-blocked" | "route-pending" | "movement-blocked" | "completed";
   blocked: "insufficient-energy" | null;
   result: RescueOutcome | null;
   microearthquake: boolean;

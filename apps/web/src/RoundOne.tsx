@@ -20,11 +20,12 @@ export function RoundOne({ summary, vote, own, enabled, busy, onVote }: {
     <p>Resultado: {summary.result === "RESCUE_APPROVED" ? "Rescate aprobado" : summary.result === "ABANDON_APPROVED" ? "Abandono aprobado" : "Sin acuerdo"} ({summary.result}).</p>
     <p>NPC: {summary.npc === "rescued" ? "rescatado" : "abandonado"}.</p>
     <p>Microterremoto: {summary.microearthquake ? "sí" : "no"}.</p>
+    <h4>Estado al terminar la ruta (histórico)</h4>
     <table><thead><tr><th>Participante</th><th>Salud</th><th>Energía</th></tr></thead>
       <tbody>{summary.characters.map((character) => <tr key={character.participantId}>
         <td>{character.name}</td><td>{character.health}</td><td>{character.energy}</td>
       </tr>)}</tbody></table>
-    <p>Packs restantes: {summary.inventory.packs}. Unidades médicas restantes: {summary.inventory.medicalUnits}.</p>
+    <p>Inventario al terminar la ruta: {summary.inventory.packs} packs y {summary.inventory.medicalUnits} unidades médicas.</p>
     <p>Costes por personaje: {summary.costs.rescueEnergy} de energía por rescate, después {summary.costs.movementEnergy} por desplazamiento. Daño por microterremoto: {summary.costs.damage}.</p>
   </section>;
   return <section className="round-panel" aria-labelledby="round-title">

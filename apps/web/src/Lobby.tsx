@@ -1,4 +1,6 @@
 import { RoundTwo } from "./RoundTwo";
+import { Supplies } from "./Supplies";
+import type { SuppliesView, PackInput, PackReply } from "@everest/shared";
 import type { RoundTwoView } from "@everest/shared";
 import { useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
@@ -38,6 +40,7 @@ export function Lobby() {
   const [vote, setVote] = useState<PublicVote | null>(null);
   const [roundTwo, setRoundTwo] = useState<RoundTwoView | null>(null);
   const [summary, setSummary] = useState<RoundOneSummary | null>(null);
+  const [supplies, setSupplies] = useState<SuppliesView | null>(null);
   const [ownVote, setOwnVote] = useState<OwnVote | null>(null);
   const [votingBusy, setVotingBusy] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -75,12 +78,13 @@ export function Lobby() {
         });
       }
     });
-    socket.on("disconnect", () => { setConnected(false); setAuthenticated(false); setRole(null); setBusy(false); setVote(null); setSummary(null); setRoundTwo(null); setOwnVote(null); setVotingBusy(false); });
+    socket.on("disconnect", () => { setConnected(false); setAuthenticated(false); setRole(null); setBusy(false); setVote(null); setSummary(null); setRoundTwo(null); setSupplies(null); setOwnVote(null); setVotingBusy(false); });
     socket.on("connect_error", () => { setConnected(false); setError("No se pudo conectar con el servidor."); });
     socket.on("room:updated", setRoom);
     socket.on("vote:updated", setVote);
     socket.on("round:completed", setSummary);
     socket.on("round-two:updated", setRoundTwo);
+    socket.on("supplies:updated", setSupplies);
     socket.on("vote:own", setOwnVote);
     socket.on("game:role", (assignment) => {
       if (assignment.participantId === credential.current?.participantId) setRole(assignment);
@@ -133,6 +137,17 @@ export function Lobby() {
     });
   }
 
+  function routeAction(action: "reveal" | "open") {
+    if (!socketRef.current?.connected || !authenticated || votingBusy) return;
+    setVotingBusy(true);
+    setError("");
+    socketRef.current.timeout(5000).emit(action === "reveal" ? "route:reveal" : "route:open", (err, reply) => {
+      setVotingBusy(false);
+      if (err) { setError("No llegó la respuesta. Reconecta para recuperar el estado."); socketRef.current?.disconnect().connect(); }
+      else if (!reply.ok) setError("El servidor rechazó la solicitud: " + reply.error);
+    });
+  }
+
   function cast(optionId: string) {
     const socket = socketRef.current;
     if (!socket?.connected || !authenticated || !vote || votingBusy) return;
@@ -145,6 +160,12 @@ export function Lobby() {
       else setError(reply.error === "vote-change-pending" ? "El cambio de voto todavía no está disponible."
         : "El servidor no ha aceptado el voto. Comprueba el intento y el estado actuales de la votación.");
     });
+  }
+
+  function givePack(input: PackInput, done: (reply: PackReply | null) => void) {
+    const socket = socketRef.current;
+    if (!socket?.connected || !authenticated) { done(null); return; }
+    socket.timeout(5000).emit("pack:give", input, (err, reply) => done(err ? null : reply));
   }
 
   const count = room?.participants.filter((participant) => participant.connected).length ?? 0;
@@ -183,14 +204,16 @@ export function Lobby() {
           <p aria-live="polite">Partida iniciada.{!role && " Recuperando tu ficha…"}</p>
           {authenticated && role && <CharacterSheet sheet={role.sheet} />}
           {authenticated && vote && (roundTwo && vote.round === 2
-            ? <RoundTwo state={roundTwo} vote={vote} own={ownVote} enabled={connected && !!role} busy={votingBusy} onVote={cast} />
+            ? <RoundTwo maintenance={role?.role === "maintenance"} creator={creator} onRouteAction={routeAction} state={roundTwo} vote={vote} own={ownVote} enabled={connected && !!role} busy={votingBusy} onVote={cast} />
             : <RoundOne summary={summary} vote={vote} own={ownVote} enabled={connected && !!role} busy={votingBusy} onVote={cast} />)}
+          {authenticated && supplies && <Supplies key={supplies.gameId} state={supplies} bellhop={role?.role === "bellhop" && supplies.characters.some(c => c.participantId === role.participantId && c.health > 0)}
+            enabled={connected && !!role} onGive={givePack} />}
           {authenticated && summary && !roundTwo && (creator
             ? <button disabled={!connected || busy} onClick={advance}>Avanzar a ronda 2</button>
             : <p>Esperando a que el creador avance a la ronda 2.</p>)}
         </>}
       </>}
-      <p className="notice">Versión de desarrollo: las salas se pierden al reiniciar el servidor. Disponibles la ronda 1 y el segundo rescate; la elección de ruta queda pendiente.</p>
+      <p className="notice">Versión de desarrollo: las salas se pierden al reiniciar el servidor. Disponibles las rondas 1 y 2. La ronda 3 queda pendiente.</p>
     </section>
   );
 }
