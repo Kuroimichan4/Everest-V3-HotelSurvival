@@ -1,3 +1,5 @@
+import type { RoundTwoView } from "@everest/shared";
+import { beginRoundTwo, resolveRoundTwo } from "../simulation/round-two.js";
 import type { PrivateRole, PublicRoom, RoomReply, RoomSession, SessionCredential } from "@everest/shared";
 import { createInitialState, isAlive } from "../simulation/state.js";
 import type { SimulationState } from "../simulation/state.js";
@@ -8,8 +10,11 @@ import { characterSheet } from "./character-sheets.js";
 import type { RandomIndex } from "./roles.js";
 import type { VoteReply } from "@everest/shared";
 import { RoomVoting, systemClock, type VotingClock } from "./voting.js";
+import type { RoundOneSummary } from "@everest/shared";
+import { resolveRoundOne } from "../simulation/round-one.js";
 
 interface Game {
+  roundOneSummary?: RoundOneSummary;
   voting: RoomVoting;
   id: string;
   state: SimulationState;
@@ -137,9 +142,92 @@ export class RoomManager {
     // Sin await entre validación y escritura: dos peticiones no pueden iniciar dos veces.
     room.game = { id: newId(), state: { ...initial, characters },
       voting: new RoomVoting(room.participants.map((player, index) => ({ participantId: player.id, alive: isAlive(characters[index]!) })),
-        this.clock, () => this.onVotingChanged(room.code)) };
+        this.clock, () => { this.resolveRound(room); this.onVotingChanged(room.code); }) };
     room.participants.forEach((player, index) => { player.characterId = characters[index]!.id; });
     return { ok: true, value: this.publicRoom(room) };
+  }
+
+  private resolveRound(room: Room): void {
+    const game = room.game;
+    if (!game) return;
+    if (game.state.currentRound === 2) {
+      const vote = game.voting.publicView();
+      if (!vote.result || game.state.roundTwo?.resolution) return;
+      const resolved = resolveRoundTwo(game.state, vote.decisionId, vote.result);
+      if (resolved.ok) game.state = resolved.state;
+      else if (resolved.error === "insufficient-energy") game.state = { ...game.state,
+        roundTwo: { ...game.state.roundTwo!, blocked: "insufficient-energy" } };
+      return;
+    }
+    if (game.state.roundOne) return;
+    const vote = game.voting.publicView();
+    if (!vote.result) return;
+    const resolved = resolveRoundOne(game.state, vote.decisionId, vote.result);
+    if (resolved.ok) game.state = resolved.state;
+  }
+
+  advanceRound(socketId: string): VoteReply {
+    const connection = this.connections.get(socketId);
+    if (!connection?.room.game) return { ok: false, error: "invalid-session" };
+    const { room, participant } = connection;
+    if (participant.id !== room.creatorId) return { ok: false, error: "not-creator" };
+    const game = room.game!;
+    const next = beginRoundTwo(game.state);
+    if (next === game.state) return { ok: false, error: "round-not-ready" };
+    if (!next.characters.some(isAlive)) return { ok: false, error: "no-living-characters-pending" };
+    const voting = new RoomVoting(room.participants.map((player) => ({ participantId: player.id,
+      alive: next.characters.some((character) => character.id === player.characterId && isAlive(character)) })),
+      this.clock, () => { this.resolveRound(room); this.onVotingChanged(room.code); }, 2);
+    game.roundOneSummary = this.roundSummary(room.code)!;
+    game.voting.dispose();
+    game.state = next;
+    game.voting = voting;
+    this.onVotingChanged(room.code);
+    return { ok: true, own: voting.ownView(participant.id) };
+  }
+
+  roundTwoView(code: string): RoundTwoView | null {
+    const room = this.rooms.get(code);
+    const game = room?.game;
+    const round = game?.state.roundTwo;
+    if (!room || !game || !round) return null;
+    const resolution = round.resolution;
+    return { round: 2, npcId: round.npcId, mobility: "walks-with-help",
+      npc: resolution?.npc ?? "pending", previousNpc: game.state.roundOne!.npc,
+      phase: resolution ? "route-pending" : round.blocked ? "resolution-blocked" : "rescue-vote",
+      blocked: round.blocked, result: resolution?.result ?? game.voting.publicView().result,
+      microearthquake: resolution?.microearthquake ?? false,
+      inventory: { ...game.state.inventory },
+      characters: room.participants.map((participant) => {
+        const character = game.state.characters.find((entry) => entry.id === participant.characterId)!;
+        return { participantId: participant.id, name: participant.name, health: character.health, energy: character.energy };
+      }) };
+  }
+
+  roundTwoSession(socketId: string): RoundTwoView | null {
+    const connection = this.connections.get(socketId);
+    return connection ? this.roundTwoView(connection.room.code) : null;
+  }
+
+  roundSummary(code: string): RoundOneSummary | null {
+    const room = this.rooms.get(code);
+    const game = room?.game;
+    if (game?.roundOneSummary) return structuredClone(game.roundOneSummary);
+    const resolution = game?.state.roundOne;
+    if (!room || !game || !resolution) return null;
+    return { gameId: game.id, decisionId: resolution.decisionId, round: 1,
+      completed: resolution.completed, result: resolution.result, npc: resolution.npc,
+      microearthquake: resolution.microearthquake, costs: { ...resolution.costs },
+      inventory: { ...game.state.inventory },
+      characters: room.participants.map((participant) => {
+        const character = game.state.characters.find((entry) => entry.id === participant.characterId)!;
+        return { participantId: participant.id, name: participant.name, health: character.health, energy: character.energy };
+      }) };
+  }
+
+  summarySession(socketId: string): RoundOneSummary | null {
+    const connection = this.connections.get(socketId);
+    return connection ? this.roundSummary(connection.room.code) : null;
   }
 
   privateRole(socketId: string): PrivateRole | null {

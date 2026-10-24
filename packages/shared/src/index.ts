@@ -13,6 +13,7 @@ export interface PingResponse {
 }
 
 export interface ClientToServerEvents {
+  "round:advance": (ack: (reply: VoteReply) => void) => void;
   "vote:cast": (input: VoteInput, ack: (reply: VoteReply) => void) => void;
   "client:ping": (acknowledge: (response: PingResponse) => void) => void;
   "room:create": (input: { name: string }, ack: (result: RoomReply<RoomSession>) => void) => void;
@@ -22,6 +23,8 @@ export interface ClientToServerEvents {
 }
 
 export interface ServerToClientEvents {
+  "round-two:updated": (state: RoundTwoView) => void;
+  "round:completed": (summary: RoundOneSummary) => void;
   "vote:updated": (vote: PublicVote) => void;
   "vote:own": (vote: OwnVote) => void;
   "server:ready": (payload: ServerReadyPayload) => void;
@@ -82,7 +85,7 @@ export interface OwnVote { decisionId: string; attemptId: string; optionId: stri
 export interface PublicVote {
   decisionId: string;
   attemptId: string;
-  round: 1;
+  round: 1 | 2;
   attemptNumber: number;
   deadline: number;
   serverNow: number;
@@ -91,3 +94,32 @@ export interface PublicVote {
   result: "RESCUE_APPROVED" | "ABANDON_APPROVED" | "NO_AGREEMENT" | null;
 }
 export type VoteReply = { ok: true; own: OwnVote } | { ok: false; error: string };
+
+export type RescueOutcome = NonNullable<PublicVote["result"]>;
+/** Vista común sin roles, conocimientos ni identificadores internos. */
+export interface RoundOneSummary {
+  gameId: string;
+  decisionId: string;
+  round: 1;
+  completed: true;
+  result: RescueOutcome;
+  npc: "rescued" | "abandoned";
+  microearthquake: boolean;
+  costs: { rescueEnergy: number; movementEnergy: number; damage: number };
+  characters: { participantId: string; name: string; health: number; energy: number }[];
+  inventory: { packs: number; medicalUnits: number };
+}
+
+export interface RoundTwoView {
+  round: 2;
+  npcId: "round-two-survivor";
+  mobility: "walks-with-help";
+  npc: "pending" | "rescued" | "abandoned";
+  phase: "rescue-vote" | "resolution-blocked" | "route-pending";
+  blocked: "insufficient-energy" | null;
+  result: RescueOutcome | null;
+  microearthquake: boolean;
+  characters: RoundOneSummary["characters"];
+  inventory: RoundOneSummary["inventory"];
+  previousNpc: RoundOneSummary["npc"];
+}

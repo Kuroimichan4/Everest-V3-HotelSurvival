@@ -8,9 +8,17 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
   manager.onVotingChanged = (code) => {
     const vote = manager.publicVote(code);
     if (vote) io.to(channel(code)).emit("vote:updated", vote);
+    const roundTwo = manager.roundTwoView(code);
+    if (roundTwo) io.to(channel(code)).emit("round-two:updated", roundTwo);
+    const summary = manager.roundSummary(code);
+    if (summary) io.to(channel(code)).emit("round:completed", summary);
   };
   const sendVoting = (socketId: string) => {
     const state = manager.votingSession(socketId);
+    const roundTwo = manager.roundTwoSession(socketId);
+    if (roundTwo) io.sockets.sockets.get(socketId)?.emit("round-two:updated", roundTwo);
+    const summary = manager.summarySession(socketId);
+    if (summary) io.sockets.sockets.get(socketId)?.emit("round:completed", summary);
     if (state) {
       io.sockets.sockets.get(socketId)?.emit("vote:updated", state.public);
       io.sockets.sockets.get(socketId)?.emit("vote:own", state.own);
@@ -18,6 +26,9 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
   };
 
   io.on("connection", (socket) => {
+    socket.on("round:advance", (ack) => {
+      if (typeof ack === "function") ack(manager.advanceRound(socket.id));
+    });
     socket.on("vote:cast", (input, ack) => {
       if (typeof ack === "function") ack(manager.vote(socket.id, input));
     });

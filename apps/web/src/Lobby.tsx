@@ -1,9 +1,11 @@
+import { RoundTwo } from "./RoundTwo";
+import type { RoundTwoView } from "@everest/shared";
 import { useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import type { ClientToServerEvents, PrivateRole, PublicRoom, RoomError, RoomReply, RoomSession, ServerToClientEvents, SessionCredential } from "@everest/shared";
 import { CharacterSheet } from "./CharacterSheet";
 import { RoundOne } from "./RoundOne";
-import type { OwnVote, PublicVote } from "@everest/shared";
+import type { OwnVote, PublicVote, RoundOneSummary } from "@everest/shared";
 
 const storageKey = "everest-room-session";
 const errors: Record<RoomError, string> = {
@@ -34,6 +36,8 @@ export function Lobby() {
   const [room, setRoom] = useState<PublicRoom | null>(null);
   const [role, setRole] = useState<PrivateRole | null>(null);
   const [vote, setVote] = useState<PublicVote | null>(null);
+  const [roundTwo, setRoundTwo] = useState<RoundTwoView | null>(null);
+  const [summary, setSummary] = useState<RoundOneSummary | null>(null);
   const [ownVote, setOwnVote] = useState<OwnVote | null>(null);
   const [votingBusy, setVotingBusy] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -71,10 +75,12 @@ export function Lobby() {
         });
       }
     });
-    socket.on("disconnect", () => { setConnected(false); setAuthenticated(false); setRole(null); setBusy(false); setVote(null); setOwnVote(null); setVotingBusy(false); });
+    socket.on("disconnect", () => { setConnected(false); setAuthenticated(false); setRole(null); setBusy(false); setVote(null); setSummary(null); setRoundTwo(null); setOwnVote(null); setVotingBusy(false); });
     socket.on("connect_error", () => { setConnected(false); setError("No se pudo conectar con el servidor."); });
     socket.on("room:updated", setRoom);
     socket.on("vote:updated", setVote);
+    socket.on("round:completed", setSummary);
+    socket.on("round-two:updated", setRoundTwo);
     socket.on("vote:own", setOwnVote);
     socket.on("game:role", (assignment) => {
       if (assignment.participantId === credential.current?.participantId) setRole(assignment);
@@ -113,6 +119,17 @@ export function Lobby() {
       if (err) { setError("No llegó la respuesta. Reintenta la reconexión para recuperar el estado."); return; }
       if (!result.ok) setError(errors[result.error]);
       else setRoom(result.value);
+    });
+  }
+
+  function advance() {
+    if (!socketRef.current?.connected || !authenticated || busy) return;
+    setBusy(true);
+    setError("");
+    socketRef.current.timeout(5000).emit("round:advance", (err, reply) => {
+      setBusy(false);
+      if (err) setError("No llegó la respuesta. Reconecta para recuperar el estado.");
+      else if (!reply.ok) setError("No se puede avanzar: " + reply.error);
     });
   }
 
@@ -165,10 +182,15 @@ export function Lobby() {
         {room.status === "started" && <>
           <p aria-live="polite">Partida iniciada.{!role && " Recuperando tu ficha…"}</p>
           {authenticated && role && <CharacterSheet sheet={role.sheet} />}
-          {authenticated && role && vote && <RoundOne vote={vote} own={ownVote} enabled={connected} busy={votingBusy} onVote={cast} />}
+          {authenticated && vote && (roundTwo && vote.round === 2
+            ? <RoundTwo state={roundTwo} vote={vote} own={ownVote} enabled={connected && !!role} busy={votingBusy} onVote={cast} />
+            : <RoundOne summary={summary} vote={vote} own={ownVote} enabled={connected && !!role} busy={votingBusy} onVote={cast} />)}
+          {authenticated && summary && !roundTwo && (creator
+            ? <button disabled={!connected || busy} onClick={advance}>Avanzar a ronda 2</button>
+            : <p>Esperando a que el creador avance a la ronda 2.</p>)}
         </>}
       </>}
-      <p className="notice">Versión de desarrollo: las salas se pierden al reiniciar el servidor. Solo está disponible la votación de rescate de la ronda 1.</p>
+      <p className="notice">Versión de desarrollo: las salas se pierden al reiniciar el servidor. Disponibles la ronda 1 y el segundo rescate; la elección de ruta queda pendiente.</p>
     </section>
   );
 }

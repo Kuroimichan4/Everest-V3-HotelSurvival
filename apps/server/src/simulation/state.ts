@@ -14,6 +14,21 @@ export interface SharedInventory {
 }
 
 export interface SimulationState {
+  readonly currentRound: 1 | 2;
+  readonly roundTwo?: {
+    readonly npcId: "round-two-survivor";
+    readonly resolution: SimulationState["roundOne"];
+    readonly blocked: "insufficient-energy" | null;
+  };
+  readonly roundOne: {
+    readonly decisionId: string;
+    readonly result: import("@everest/shared").RescueOutcome;
+    readonly npc: "rescued" | "abandoned";
+    readonly consequencesApplied: true;
+    readonly completed: true;
+    readonly microearthquake: boolean;
+    readonly costs: { readonly rescueEnergy: number; readonly movementEnergy: number; readonly damage: number };
+  } | null;
   readonly characters: readonly HumanCharacter[];
   readonly inventory: SharedInventory;
 }
@@ -22,6 +37,7 @@ export interface SimulationState {
 export function createInitialState(): SimulationState {
   const roles: readonly HumanRole[] = ["maintenance", "medic", "architect-engineer", "bellhop"];
   return {
+    currentRound: 1, roundOne: null,
     characters: roles.map((role) => ({ id: role, role, health: 100, energy: 100 })),
     inventory: { packs: 8, medicalUnits: 4 },
   };

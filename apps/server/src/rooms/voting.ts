@@ -16,7 +16,7 @@ export const systemClock: VotingClock = {
 export class RoomVoting {
   private decision: Decision;
   private cancel: (() => void) | undefined;
-  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void) {
+  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void, private readonly round: 1 | 2 = 1) {
     const created = createDecision({ id: newId(), attemptId: newId(), now: clock.now(), electorate,
       options: [{ id: "rescue", label: "RESCATAR" }, { id: "abandon", label: "ABANDONAR" }] });
     if (!created.ok) throw new Error(created.error);
@@ -47,7 +47,7 @@ export class RoomVoting {
   publicView(): PublicVote {
     const decision = this.decision;
     const current = decision.attempts.at(-1)!;
-    return { decisionId: decision.id, attemptId: current.id, round: 1, attemptNumber: decision.attempts.length,
+    return { decisionId: decision.id, attemptId: current.id, round: this.round, attemptNumber: decision.attempts.length,
       deadline: current.deadline, serverNow: this.clock.now(), requiredVotes: current.requiredVotes,
       status: decision.status === "closed" ? "closed" : "open",
       result: decision.status !== "closed" ? null : decision.result.kind === "no-agreement" ? "NO_AGREEMENT"
