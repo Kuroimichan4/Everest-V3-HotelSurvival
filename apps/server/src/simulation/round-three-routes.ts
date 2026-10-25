@@ -15,6 +15,9 @@ const definitions: readonly Definition[] = [
   { id: "pipe-gallery", name: "Galería de tuberías", energyCost: MOVEMENT_ENERGY["pipe-gallery"], danger: "EXTREME", accidentProbability: 0.5, accidentDamage: 30 },
   { id: "metal-debris", name: "Escombros metálicos", energyCost: MOVEMENT_ENERGY["metal-debris"], danger: "MODERATE", accidentProbability: 0.2, accidentDamage: 10 },
 ];
+
+/** Solo para evidencias internas; no modifica las proyecciones autorizadas. */
+export function internalRoundThreeRisk(id: string) { return definitions.find(route => route.id === id)?.danger ?? null; }
 export type RoundThreeRouteError = RouteError | "crowbar-unavailable-pending"
   | "round-three-already-resolved" | "invalid-request";
 export interface RoundThreeRouteOutcome {

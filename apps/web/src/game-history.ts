@@ -13,13 +13,13 @@ export function gameHistory(state: GameState): HistoryEntry[] {
   if (second?.result) put({ id: "npc:2", round: 2, title: rescueLabel(second.result), details: [second.npc === "rescued" ? "Segundo superviviente rescatado." : "El segundo superviviente no acompaña al equipo."] });
   if (second?.movement?.status === "completed") {
     const m = second.movement;
-    put({ id: `route:${m.decisionId}`, round: 2, title: `Ruta completada: ${m.routeName}`, details: [`Coste normal: ${m.energyCost} de energía.`, `Accidente: ${m.accident ? "sí" : "no"}.`, ...m.victims.map(v => `${v.name}: −${v.damage} de salud.`), ...(m.microearthquake ? ["Microterremoto de ruta: −10 de salud."] : [])], snapshot: second.characters });
+    put({ id: `route:${m.decisionId}`, round: 2, title: `Ruta completada: ${m.routeName}`, details: [`Coste normal: ${m.energyCost} de energía.`, `Accidente: ${m.accident ? "sí" : "no"}.`, ...m.victims.filter(v => v.damage !== undefined).map(v => `${v.name}: −${v.damage} de salud.`), ...(m.microearthquake ? ["Microterremoto de ruta: −10 de salud."] : [])], snapshot: second.characters });
   }
   const third = state.roundThree;
   if (third?.movement && third.selection) {
     const m = third.movement;
     put({ id: `route:${third.selection.decisionId}`, round: 3, title: `Ruta completada: ${third.options.find(o => o.id === m.routeId)?.name ?? "Recorrido"}`,
-      details: [`Coste normal: ${m.energyCost} de energía.`, `Accidente: ${m.accident ? "sí" : "no"}.`, ...m.environment.map(v => `${v.name}: −${v.damage} de salud por humo/gas.`), ...m.victims.map(v => `${v.name}: −${v.damage} de salud por accidente.`), `Recursos encontrados: ${m.gained.packs} packs y ${m.gained.medicalUnits} unidades médicas.`, ...(m.crowbarLost ? ["Palanca perdida; regreso bloqueado."] : [])], ...(third.afterRoute ? { snapshot: third.afterRoute.characters } : {}) });
+      details: [`Coste normal: ${m.energyCost} de energía.`, `Accidente: ${m.accident ? "sí" : "no"}.`, ...m.environment.filter(v => v.damage !== undefined).map(v => `${v.name}: −${v.damage} de salud por humo/gas.`), ...m.victims.filter(v => v.damage !== undefined).map(v => `${v.name}: −${v.damage} de salud por accidente.`), `Recursos encontrados: ${m.gained.packs} packs y ${m.gained.medicalUnits} unidades médicas.`, ...(m.crowbarLost ? ["Palanca perdida; regreso bloqueado."] : [])], ...(third.afterRoute ? { snapshot: third.afterRoute.characters } : {}) });
   }
   const fourth = state.roundFour;
   if (fourth) {
@@ -34,7 +34,7 @@ export function gameHistory(state: GameState): HistoryEntry[] {
       const name = (id: string) => m.characters.find(c => c.participantId === id)?.name ?? "Compañero";
       put({ id: `route:${m.requestId}`, round: 4, title: "Evacuación completada",
         details: [fourth.options.find(o => o.id === m.routeId)?.name ?? "Salida", `Energía de ruta: ${m.energyCost}. Accidente: ${m.accident ? "sí" : "no"}.`,
-          ...m.victims.map(v => `${name(v.participantId)}: −${v.damage} de salud.`), `Han salido: ${m.escapedHumanIds.map(name).join(", ") || "Ninguno"}.`, npcFourLabel(npc.status)], snapshot: m.characters });
+          ...m.victims.filter(v => v.damage !== undefined).map(v => `${name(v.participantId)}: −${v.damage} de salud.`), `Han salido: ${m.escapedHumanIds.map(name).join(", ") || "Ninguno"}.`, npcFourLabel(npc.status)], snapshot: m.characters });
     }
   }
   for (const f of [...(second?.failedSelections ?? []), ...(third?.failedSelections ?? [])]) put({ id: `route:${f.decisionId}`, round: f.round, title: "Selección de ruta no ejecutada", details: [reasonLabel(f.reason)] });
@@ -45,11 +45,11 @@ export function gameHistory(state: GameState): HistoryEntry[] {
       const outcome = d.outcome === "NO_AGREEMENT" ? "Sin acuerdo" : d.outcome === "carry-all" ? "Transportar a los agotados" : d.outcome === "carry-one" ? "Transportar solamente a uno" : d.outcome === "leave-all" ? "Continuar sin transportar" : `Transportar a ${names([c.exhaustedIds[Number(d.outcome.split("-").at(-1))] ?? ""])}`;
       put({ id: `decision:${d.vote.decisionId}`, round: c.round, title: d.stage === "recipient" ? "Compañero seleccionado" : "Decisión de transporte", details: [outcome, `${d.vote.attemptNumber} intento(s). Mayoría: ${d.vote.requiredVotes}.`] });
     }
-    if (c.phase === "completed" || c.abandonedIds.length) put({ id: `transport:${c.preparationId}`, round: c.round, title: "Plan de transporte resuelto", details: [`Transportados: ${names(c.transportedIds)}.`, `Abandonados: ${names(c.abandonedIds)}.`, ...c.charges.map(p => `${names([p.participantId])}: ${p.routeEnergy} de ruta + ${p.transportEnergy} de transporte.`), ...c.transfers.map(t => `Objetos de ${names([t.participantId])} transferidos: ${t.items.map(i => i.kind).join(", ") || "ninguno"}.`)] });
+    if (c.phase === "completed" || c.abandonedIds.length) put({ id: `transport:${c.preparationId}`, round: c.round, title: "Plan de transporte resuelto", details: [`Transportados: ${names(c.transportedIds)}.`, `Abandonados: ${names(c.abandonedIds)}.`, ...c.charges.filter(p => p.routeEnergy !== undefined && p.transportEnergy !== undefined).map(p => `${names([p.participantId])}: ${p.routeEnergy} de ruta + ${p.transportEnergy} de transporte.`), ...c.transfers.map(t => `Objetos de ${names([t.participantId])} transferidos: ${t.items.map(i => i.kind).join(", ") || "ninguno"}.`)] });
   }
   for (const e of state.activity?.entries ?? []) {
     const name = state.supplies?.characters.find(c => c.participantId === e.targetParticipantId)?.name ?? "Compañero";
-    put({ id: `activity:${e.id}`, round: e.round, title: `${e.kind === "pack" ? "Pack entregado" : "Tratamiento administrado"}: ${name}`, details: [`+${e.restored} de ${e.kind === "pack" ? "energía" : "salud"}.`] });
+    put({ id: `activity:${e.id}`, round: e.round, title: `${e.kind === "pack" ? "Pack entregado" : "Tratamiento administrado"}: ${name}`, details: e.restored === undefined ? [] : [`+${e.restored} de ${e.kind === "pack" ? "energía" : "salud"}.`] });
   }
   return [...entries.values()].sort((a, b) => a.round - b.round);
 }

@@ -37,7 +37,7 @@ function setup() {
   const role = (name: string) => [0, 1, 2, 3].find(i => manager.privateRole(`s${i}`)?.role === name)!;
   const pack = (i: number) => manager.givePack(`s${role("bellhop")}`, { requestId: crypto.randomUUID(), windowId: manager.suppliesView(code)!.windowId!, targetParticipantId: sessions[i]!.credential.participantId });
   const roundThree = () => {
-    vote("abandon"); manager.advanceRound("s0"); vote("abandon"); manager.routeAction("s0", "open"); vote("unstable-corridor");
+    vote("abandon"); manager.advanceRound("s0"); manager.routeAction("s0", "open"); vote("unstable-corridor"); vote("abandon"); manager.openTransport("s0", { preparationId: manager.transportView(code)!.cases.at(-1)!.preparationId });
     manager.roundThreeAction("s0", "advance"); manager.roundThreeAction("s0", "open"); vote("metal-debris");
     // Suministros reales de preparación: dos packs a cada humano (15 -> 65).
     for (let i = 0; i < 4; i++) { expect(pack(i).ok).toBe(true); expect(pack(i).ok).toBe(true); }
@@ -169,7 +169,10 @@ test("all die in collapse: no invalid new vote, no automatic defeat or forced mo
   const f = setup(); f.roundThree(); f.setState(s => ({ ...s, characters: s.characters.map(c => ({ ...c, health: 5 })) }));
   f.begin(); f.manager.roundFourAction("s0", "open"); f.clock.advance(60000);
   expect(f.manager.roundFourView(f.code)).toMatchObject({ phase: "blocked", blocked: "no-living-characters", movement: null });
-  expect(f.manager.publicVote(f.code)!.status).toBe("closed");
+  expect(f.manager.publicVote(f.code)).toBe(null);
+  expect(f.manager.finalResult(f.code)).toMatchObject({ kind: "no-active-humans", counts: { evacuated: 0, dead: 4 } });
+  expect(f.manager.finalSession("s0")).toMatchObject({ kind: "no-active-humans" });
+  expect(f.manager.objectiveSession("s0")).toBe(null);
   f.manager.votingSession("s0");
   expect(f.clock.tasks.size).toBe(0);
 });
@@ -234,7 +237,7 @@ test("failed accident source cannot commit proposed human abandonment or reroll 
   f.vote("leave-all", [1, 2]);
   expect(f.manager.roundFourView(f.code)).toMatchObject({ phase: "blocked", blocked: "invalid-random", movement: null });
   expect(JSON.stringify(f.game().state.characters)).toBe(before);
-  expect(f.game().state.sharedItems).toBeUndefined();
+  expect(f.game().state.sharedItems ?? []).toEqual([]);
   expect(f.manager.transportView(f.code)!.cases.at(-1)!.abandonedIds).toEqual([]);
   const calls = f.random.mock.calls.length;
   f.manager.roundFourAction("s0", "retry", { preparationId: f.manager.roundFourView(f.code)!.preparationId });

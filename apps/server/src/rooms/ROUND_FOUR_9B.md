@@ -173,3 +173,32 @@ Comandos desde la raíz con el Node local de `.tools` en PATH:
   queda como comprobación manual; no se afirma haberla realizado con estas pruebas.
 
 La fase de puntuaciones y pantalla final definitiva no se inicia automáticamente.
+
+## Corrección de visibilidad y salida del rescate por inacción
+
+Se reprodujeron seis regresiones en el selector de la acción actual: los cuatro
+roles podían quedar mostrando ronda 3 si su snapshot auxiliar de suministros seguía
+en esa ronda, aunque ya hubieran recibido el estado público de ronda 4. Ese mismo
+conflicto ocultaba la preparación de salida después del fallecimiento del NPC.
+Un snapshot de transporte también podía desplazar indebidamente la acción vigente.
+
+`activeScene` da ahora prioridad al estado de ronda 4 y solo activa su panel de
+transporte cuando la fase pública es `transport`. El voto del NPC cerrado permanece
+en el historial, pero no se utiliza como decisión activa durante la preparación.
+No se han cambiado emisiones, temporizadores ni consecuencias del motor: la
+coordinación ya registraba la muerte y publicaba preparación a toda la sala.
+
+La prueba Socket.IO adicional alimenta el reducer y los listeners reales de cuatro
+clientes, retrasa los snapshots auxiliares de tres, recupera una sesión con voto
+mediante reconexión y deja agotar 60/30 segundos. Comprueba mensaje literal, una
+emisión por transición y cliente, NPC muerto, ausencia de gastos/derrumbe, ningún
+voto activo residual y posterior elección y ejecución de la grieta. Las pruebas
+de renderizado comprueban que aparecen rescate o preparación según corresponda,
+sin depender del rol. El import de tipos del binder usa extensión `.js` para poder
+comprobarlo también desde las pruebas NodeNext del servidor.
+
+Reproducción manual: en cuatro perfiles, alcanzar ronda 4 con NPC presente, recargar
+uno durante el rescate y dejar pasar ambos intentos. Todos deben mostrar el mismo
+intento/plazo; tras los primeros 60 s aparece el mensaje literal y otros 30 s;
+después se muestra preparación de salida, sin daño ni consumo. El anfitrión puede
+abrir la votación de salida. La revisión visual en navegadores sigue siendo manual.

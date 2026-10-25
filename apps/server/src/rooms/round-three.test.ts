@@ -18,7 +18,7 @@ function setup() {
     const current = manager.publicVote(code)!;
     for (let i = 0; i < count; i++) expect(manager.vote(`s${i}`, { decisionId: current.decisionId, attemptId: current.attemptId, optionId }).ok).toBe(true);
   };
-  vote("rescue"); manager.advanceRound("s0"); vote("rescue"); manager.routeAction("s0", "open"); vote("unstable-corridor");
+  vote("rescue"); manager.advanceRound("s0"); manager.routeAction("s0", "open"); vote("unstable-corridor"); vote("rescue"); manager.openTransport("s0", { preparationId: manager.transportView(code)!.cases.at(-1)!.preparationId });
   const setState = (change: (state: SimulationState) => SimulationState) => {
     const room = (manager as unknown as { rooms: Map<string, { game: { state: SimulationState } }> }).rooms.get(code)!;
     room.game.state = change(room.game.state);

@@ -14,7 +14,7 @@ const definitions: Record<AssignedRole, RoleDefinition> = {
   maintenance: {
     name: "Mantenimiento",
     responsibility: "Aportas conocimientos técnicos sobre instalaciones y herramientas para abrir rutas alternativas.",
-    objective: "Abrir al menos dos rutas alternativas.",
+    objective: "Descubrir y revelar al equipo al menos dos rutas alternativas que los demás desconocían.",
     knowledge: [
       { id: "technical", revealAt: "briefing", text: "Conoces las instalaciones, las herramientas y la existencia de los conductos de ventilación como ruta técnica." },
       { id: "crowbar", revealAt: "briefing", text: "Inicialmente dispones de la palanca necesaria para determinadas acciones." },

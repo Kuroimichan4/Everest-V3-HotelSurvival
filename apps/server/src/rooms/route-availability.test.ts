@@ -20,9 +20,16 @@ function setup(round: 2 | 3, energies = [100, 100, 100, 100]) {
   manager.start("s0");
   const vote = (optionId: string, voters = [0, 1, 2]) => {
     const current = manager.publicVote(code)!;
-    return voters.map(i => manager.vote(`s${i}`, { decisionId: current.decisionId, attemptId: current.attemptId, optionId }));
+    const replies = voters.map(i => manager.vote(`s${i}`, { decisionId: current.decisionId, attemptId: current.attemptId, optionId }));
+    if (manager.roundTwoView(code)?.phase === "rescue-vote") {
+      const npc = manager.publicVote(code)!;
+      for (const i of [0, 1, 2]) manager.vote(`s${i}`, { decisionId: npc.decisionId, attemptId: npc.attemptId, optionId: "abandon" });
+    }
+    const prep = manager.transportView(code)?.cases.at(-1);
+    if (prep?.phase === "preparation" && !prep.exhaustedIds.length) manager.openTransport("s0", { preparationId: prep.preparationId });
+    return replies;
   };
-  vote("abandon"); manager.advanceRound("s0"); vote("abandon");
+  vote("abandon"); manager.advanceRound("s0");
   if (round === 3) { manager.routeAction("s0", "open"); vote("unstable-corridor"); manager.roundThreeAction("s0", "advance"); }
   const game = () => (manager as unknown as { rooms: Map<string, { game: { state: SimulationState } }> }).rooms.get(code)!.game;
   const changeEnergy = (values: number[]) => { game().state = { ...game().state, characters: game().state.characters.map((c, i) => ({ ...c, energy: values[i]! })) }; };
@@ -42,11 +49,12 @@ test.each([2, 3] as const)("ronda %i mantiene visibles las rutas inviables y rec
   const expensive = round === 2 ? "shoring" : "metal-debris";
   const before = f.game().state;
   for (const reply of f.vote(expensive)) expect(reply).toEqual({ ok: false, error: "invalid-option" });
-  expect(f.game().state).toBe(before); expect(f.random).not.toHaveBeenCalled();
+  expect(f.game().state.characters).toBe(before.characters); expect(f.game().state.inventory).toBe(before.inventory); expect(f.random).not.toHaveBeenCalled();
   expect(f.manager.publicVote(f.code)!.requiredVotes).toBe(3);
   const cheap = round === 2 ? "unstable-corridor" : "pipe-gallery";
   f.vote(cheap, [0, 1]); expect(f.view().phase).not.toBe("completed");
-  f.vote(cheap, [2]); expect(f.view().phase).toBe("completed");
+  f.vote(cheap, [2]); if (round === 2) { const prep = f.manager.transportView(f.code)?.cases.at(-1); if (prep?.phase === "preparation") f.manager.openTransport("s0", { preparationId: prep.preparationId }); }
+  expect(f.view().phase).toBe("completed");
   expect(f.manager.suppliesView(f.code)!.characters.every(c => c.energy === 0)).toBe(true);
 });
 
@@ -72,7 +80,7 @@ test.each([2, 3] as const)("ronda %i recupera selección obsoleta, conserva esta
   f.changeEnergy([20, 20, 20, 20]); const before = f.game().state;
   f.vote(expensive, [2]);
   expect(f.view().recovery).toMatchObject({ decisionId: old.decisionId, forced: false });
-  expect(f.game().state).toBe(before); expect(f.random).not.toHaveBeenCalled();
+  expect(f.game().state.characters).toBe(before.characters); expect(f.game().state.inventory).toBe(before.inventory); expect(f.random).not.toHaveBeenCalled();
   f.manager.disconnect("s1"); expect(f.manager.resume("replacement", f.sessions[1]!.credential).ok).toBe(true);
   expect((round === 2 ? f.manager.roundTwoSession("replacement") : f.manager.roundThreeSession("replacement"))!.recovery).toEqual(f.view().recovery);
   expect(f.manager.retryRoute("outsider", { decisionId: old.decisionId })).toEqual({ ok: false, error: "invalid-session" });
@@ -99,11 +107,13 @@ test.each([2, 3] as const)("ronda %i forzada imposible conserva obligación y re
   const f = setup(round); f.open(); const vote = f.manager.publicVote(f.code)!;
   f.changeEnergy([5, 5, 5, 5]); const before = f.game().state;
   f.clock.advance(60_000); f.clock.advance(30_000);
+  if (round === 2) f.vote("abandon");
   expect(f.view().recovery).toMatchObject({ decisionId: vote.decisionId, forced: true });
-  expect(f.game().state).toBe(before); expect(f.random).not.toHaveBeenCalled();
+  expect(f.game().state.characters).toBe(before.characters); expect(f.game().state.inventory).toBe(before.inventory); expect(f.random).not.toHaveBeenCalled();
   expect(f.manager.retryRoute("s0", { decisionId: vote.decisionId })).toEqual({ ok: false, error: "forced-route-energy-pending" });
   for (const i of [0, 1, 2, 3]) expect(f.give(i).ok).toBe(true);
   expect(f.manager.retryRoute("s0", { decisionId: vote.decisionId }).ok).toBe(true);
+  if (round === 2) { const prep = f.manager.transportView(f.code)?.cases.at(-1); if (prep?.phase === "preparation") f.manager.openTransport("s0", { preparationId: prep.preparationId }); }
   expect(f.view().phase).toBe("completed");
   expect(f.manager.suppliesView(f.code)!.characters.map(c => [c.energy, c.health])).toEqual(Array(4).fill([10, round === 2 ? 90 : 80]));
   expect(f.manager.suppliesView(f.code)!.inventory.packs).toBe(4);
@@ -152,5 +162,49 @@ test("un bloqueo posterior al azar no admite recuperar la selección ni repetir 
   expect(f.view().recovery).toBeUndefined();
   const before = f.game().state;
   expect(f.manager.retryRoute("s0", { decisionId: selection.decisionId })).toEqual({ ok: false, error: "route-not-recoverable" });
-  expect(f.game().state).toBe(before); expect(f.random).toHaveBeenCalledTimes(1);
+  expect(f.game().state.characters).toBe(before.characters); expect(f.game().state.inventory).toBe(before.inventory); expect(f.random).toHaveBeenCalledTimes(1);
+});
+
+test("10A: NPC rescue blocked by energy waits for packs and retries once before movement", () => {
+  const f = setup(2, [20, 20, 20, 20]); f.open();
+  const cast = (optionId: string) => { const v = f.manager.publicVote(f.code)!; for (const i of [0, 1, 2]) expect(f.manager.vote(`s${i}`, { decisionId: v.decisionId, attemptId: v.attemptId, optionId }).ok).toBe(true); };
+  cast("unstable-corridor"); const npc = f.manager.publicVote(f.code)!; cast("rescue");
+  expect(f.view()).toMatchObject({ phase: "resolution-blocked", blocked: "insufficient-energy", movement: null });
+  expect(f.game().state.characters.every(c => c.energy === 20)).toBe(true);
+  expect(f.manager.suppliesView(f.code)!.windowId).not.toBeNull();
+  expect(f.manager.retryRoute("s0", { decisionId: npc.decisionId })).toEqual({ ok: false, error: "insufficient-energy" });
+  for (const i of [0, 1, 2, 3]) expect(f.give(i).ok).toBe(true);
+  expect(f.manager.retryRoute("s0", { decisionId: npc.decisionId }).ok).toBe(true);
+  expect(f.game().state.characters.every(c => c.energy === 20)).toBe(true);
+  expect(f.view()).toMatchObject({ phase: "transport-pending", npc: "rescued", movement: null });
+  const paid = f.game().state;
+  f.manager.retryRoute("s0", { decisionId: npc.decisionId });
+  f.manager.disconnect("s1"); f.manager.resume("restored", f.sessions[1]!.credential);
+  expect(f.game().state).toBe(paid); expect(f.random).not.toHaveBeenCalled();
+  const prep = f.manager.transportView(f.code)!.cases.at(-1)!;
+  expect(f.manager.openTransport("s0", { preparationId: prep.preparationId }).ok).toBe(true);
+  expect(f.view().phase).toBe("completed"); expect(f.game().state.characters.every(c => c.energy === 0)).toBe(true);
+  expect(f.random).toHaveBeenCalledTimes(1);
+});
+
+test("10A: reselecting a route after rescue keeps the NPC and never pays its 25 energy again", () => {
+  const f = setup(2, [40, 40, 40, 40]); f.manager.routeAction("s3", "reveal"); f.open();
+  const cast = (optionId: string) => { const v = f.manager.publicVote(f.code)!; for (const i of [0, 1, 2]) expect(f.manager.vote(`s${i}`, { decisionId: v.decisionId, attemptId: v.attemptId, optionId }).ok).toBe(true); };
+  cast("shoring"); const route = f.manager.roundTwoView(f.code)!.routeChoice!.result!; cast("rescue");
+  expect(f.view().recovery).toMatchObject({ decisionId: route.decisionId, forced: false });
+  expect(f.game().state.characters.every(c => c.energy === 15)).toBe(true);
+  const npcResolution = f.game().state.roundTwo!.resolution;
+  for (const i of [0, 1, 2, 3]) expect(f.give(i).ok).toBe(true);
+  expect(f.manager.retryRoute("s0", { decisionId: route.decisionId }).ok).toBe(true);
+  f.open(); cast("shoring");
+  expect(f.view().phase).toBe("transport-pending");
+  expect(f.game().state.roundTwo!.resolution).toBe(npcResolution);
+  expect(f.game().state.characters.every(c => c.energy === 40)).toBe(true);
+  expect(f.game().state.routeRevelations).toHaveLength(1);
+  const prep = f.manager.transportView(f.code)!.cases.at(-1)!;
+  f.manager.openTransport("s0", { preparationId: prep.preparationId });
+  expect(f.view().phase).toBe("completed");
+  expect(f.game().state.characters.every(c => c.energy === 0)).toBe(true);
+  expect(f.game().state.roundTwo!.resolution).toBe(npcResolution);
+  expect(f.random).toHaveBeenCalledTimes(1);
 });

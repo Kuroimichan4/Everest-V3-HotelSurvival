@@ -4,7 +4,8 @@ import { expect, test, vi } from "vitest";
 import type { PublicVote } from "@everest/shared";
 import { activeScene, emptyGame, gameReducer, type GameState } from "./game-state";
 import { gameHistory } from "./game-history";
-import { GameScreen, type GameActions } from "./GameScreen";
+import { GameScreen, TeamStatus, type GameActions } from "./GameScreen";
+import { VotePanel } from "./VotePanel";
 import { bindGameSocket, type GameSocket } from "./game-socket";
 
 const vote: PublicVote = { decisionId: "npc", attemptId: "first", round: 1, attemptNumber: 1, deadline: 61000, serverNow: 1000, requiredVotes: 3, status: "open", result: null };
@@ -18,6 +19,34 @@ function state(): GameState {
 }
 const actions: GameActions = { onVote: vi.fn(), onRoute: vi.fn(), onOpenThree: vi.fn(), onAdvance: vi.fn(), onOpenTransport: vi.fn(), onRetry: vi.fn(), onGive: vi.fn(), onTreat: vi.fn() };
 const render = (s: GameState) => renderToStaticMarkup(createElement(GameScreen, { state: s, participantId: "p0", connected: true, busy: false, error: "", actions }));
+
+test.each([false, true])("10A: projected team has only authorized bars, active statuses and readable history (Medic %s)", medic => {
+  const s = state();
+  s.supplies = { ...s.supplies!, characters: s.supplies!.characters.map((c, i) => ({ participantId: c.participantId, name: c.name, status: "active" as const,
+    ...(i === 0 || medic ? { health: 80 } : {}), ...(i === 0 ? { energy: 50 } : {}) })) };
+  s.activity = { ...s.activity!, entries: [{ id: "foreign-pack", round: 1, kind: "pack", targetParticipantId: "p1" }] };
+  const team = renderToStaticMarkup(createElement(TeamStatus, { state: s, participantId: "p0" }));
+  expect(team.match(/<progress/g)).toHaveLength(medic ? 5 : 2);
+  expect(team.match(/>Activo</g)).toHaveLength(4);
+  expect(team).not.toContain("Agotado"); expect(team).not.toContain("Fallecido");
+  const html = render(s);
+  expect(html).toContain("Pack entregado"); expect(html).not.toContain("undefined");
+});
+
+test("10A: own current selection leaves every authorized alternative enabled until closure", () => {
+  const props = { title: "Decision", vote, own: { decisionId: vote.decisionId, attemptId: vote.attemptId, optionId: "rescue" },
+    options: [{ id: "rescue", label: "Rescatar" }, { id: "abandon", label: "Abandonar" }], enabled: true, busy: false, onVote: vi.fn() };
+  const open = renderToStaticMarkup(createElement(VotePanel, props));
+  expect(open).toContain("Voto registrado"); expect(open).toContain("Votar Abandonar"); expect(open).not.toContain("disabled");
+  const closed = renderToStaticMarkup(createElement(VotePanel, { ...props, vote: { ...vote, status: "closed" } }));
+  expect(closed.match(/disabled=""/g)).toHaveLength(2);
+});
+
+test("10A: R2 preparation renders route controls without an active NPC vote", () => {
+  const s: GameState = second(state()); s.vote = null; s.roundTwo = { ...s.roundTwo!, npc: "pending", result: null };
+  const html = render(s);
+  expect(html).toContain("Abrir votación de ruta"); expect(html).not.toContain("¿Rescatamos al superviviente?");
+});
 function second(s: GameState) {
   return { ...s, supplies: { ...s.supplies!, round: 2 as const }, roundTwo: { round: 2 as const, npcId: "round-two-survivor" as const, mobility: "walks-with-help" as const, npc: "rescued" as const, phase: "route-pending" as const, blocked: null, result: "RESCUE_APPROVED" as const, microearthquake: false,
     characters: s.supplies!.characters, inventory: s.supplies!.inventory, previousNpc: "rescued" as const, movement: null,
@@ -27,7 +56,7 @@ test.each(["rescue", "route", "transport", "selection", "completed", "recovery"]
   let s: GameState = state();
   if (phase !== "rescue") s = second(s);
   if (phase === "transport" || phase === "selection") s.transport = { cases: [{ preparationId: "t", round: 2, routeId: "unstable-corridor", routeName: "Pasillo", routeCost: 20, phase: phase === "selection" ? "selection" : "voting", reason: null,
-    exhaustedIds: ["p0"], eligibleIds: ["p1", "p2", "p3"], people: s.supplies!.characters.map(c => ({ participantId: c.participantId, name: c.name, energy: c.energy })), options: [], vote: { ...vote, decisionId: "transport", round: 2 }, decisions: [], transportedIds: [], abandonedIds: [], charges: [], transfers: [] }] };
+    exhaustedIds: ["p0"], eligibleIds: ["p1", "p2", "p3"], people: s.supplies!.characters.map(c => ({ participantId: c.participantId, name: c.name, ...(c.energy !== undefined ? { energy: c.energy } : {}) })), options: [], vote: { ...vote, decisionId: "transport", round: 2 }, decisions: [], transportedIds: [], abandonedIds: [], charges: [], transfers: [] }] };
   if (phase === "completed") s.roundTwo = { ...s.roundTwo!, phase: "completed", movement: { status: "completed", decisionId: "route2", routeId: "unstable-corridor", routeName: "Pasillo", energyCost: 20, forced: false, microearthquake: false, accident: false, victims: [] } };
   if (phase === "recovery") s.roundTwo = { ...s.roundTwo!, recovery: { decisionId: "route2", forced: false, reason: "route-energy-insufficient" } };
   const html = render(s);

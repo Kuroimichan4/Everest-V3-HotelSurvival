@@ -17,9 +17,9 @@ export function RoundFour({ state, own, creator, enabled, busy, onVote, onOpen, 
     const names = (ids: string[]) => ids.map(id => m.characters.find(c => c.participantId === id)?.name ?? "Compañero").join(", ") || "Ninguno";
     return <><p className="eyebrow">EVACUACIÓN</p><h2>Resumen provisional de salida</h2>
       <p>Ruta utilizada: {state.options.find(o => o.id === m.routeId)?.name}.</p>
-      <p>Accidente: {m.accident ? "sí" : "no"}.{m.victims.map(v => ` ${names([v.participantId])}: −${v.damage} de salud.`).join("")}</p>
+      <p>Accidente: {m.accident ? "sí" : "no"}.{m.victims.filter(v => v.damage !== undefined).map(v => ` ${names([v.participantId])}: −${v.damage} de salud.`).join("")}</p>
       <p>Han conseguido salir: {names(m.escapedHumanIds)}.</p>
-      <p>Fallecidos: {names(m.characters.filter(c => c.health === 0 && !c.eliminated).map(c => c.participantId))}.</p>
+      <p>Fallecidos: {names(m.characters.filter(c => c.status === "dead" || c.health === 0 && !c.eliminated).map(c => c.participantId))}.</p>
       <p>Abandonados: {names(m.characters.filter(c => c.eliminated).map(c => c.participantId))}.</p>
       <p>{npcFourLabel(npc.status)}</p><p className="muted">La salud, energía, recursos restantes y palanca se muestran en el estado del equipo. La evaluación final sigue pendiente.</p></>;
   }

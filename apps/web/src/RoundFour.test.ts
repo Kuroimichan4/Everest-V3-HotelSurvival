@@ -30,6 +30,40 @@ function fixture(): GameState {
 }
 const render = (state: GameState) => renderToStaticMarkup(createElement(GameScreen, { state, participantId: "p0", connected: true, busy: false, error: "", actions }));
 
+test.each(["maintenance", "medic", "architect-engineer", "bellhop"] as const)("%s sees NPC vote despite a delayed round-three supplies snapshot", role => {
+  const s = fixture(); s.supplies = { ...s.supplies!, round: 3 };
+  s.role = { ...s.role!, role };
+  expect(activeScene(s)).toMatchObject({ round: 4, kind: "round-four", vote: { decisionId: "npc4", attemptId: "first" } });
+  const current = render(s).split('class="panel game-history"')[0]!;
+  expect(current).toContain("Decidir el rescate");
+  expect(current).toContain("60s");
+  expect(current).not.toContain("El equipo ha terminado el recorrido");
+});
+
+test("NPC death selects exit preparation even with stale supplies and the old generic vote", () => {
+  const s = fixture(); s.supplies = { ...s.supplies!, round: 3 };
+  s.roundFour = { ...s.roundFour!, phase: "preparation", npc: { ...s.roundFour!.npc, status: "dead",
+    vote: { ...vote, status: "closed", attemptNumber: 2, result: "NO_AGREEMENT" } } };
+  expect(activeScene(s)).toMatchObject({ round: 4, kind: "round-four", vote: null });
+  const current = render(s).split('class="panel game-history"')[0]!;
+  expect(current).toContain("Elegir la salida");
+  expect(current).toContain("Abrir votación de salida");
+  expect(current).not.toContain("Decidir el rescate");
+  expect(current).not.toContain("Esperando al servidor");
+});
+
+test("only the public round-four transport phase can activate a round-four transport snapshot", () => {
+  const s = fixture();
+  s.transport = { cases: [{ preparationId: "old", round: 4, routeId: "exterior-crack", routeName: "Grieta", routeCost: 10,
+    phase: "voting", reason: null, exhaustedIds: [], eligibleIds: [], people: [], options: [], vote: { ...vote, decisionId: "transport" },
+    decisions: [], transportedIds: [], abandonedIds: [], charges: [], transfers: [] }] };
+  expect(activeScene(s)).toMatchObject({ kind: "round-four", vote: { decisionId: "npc4" } });
+  s.roundFour = { ...s.roundFour!, phase: "preparation", npc: { ...s.roundFour!.npc, status: "dead" } };
+  expect(activeScene(s)).toMatchObject({ kind: "round-four", vote: null });
+  s.roundFour.phase = "transport";
+  expect(activeScene(s)).toMatchObject({ kind: "transport", vote: { decisionId: "transport" } });
+});
+
 test.each(["npc-voting", "preparation", "exit-voting", "blocked", "completed"] as const)("round 4 %s has one screen, active action, four cards, folded read-only history", phase => {
   const s = fixture(); const fourth = s.roundFour!;
   fourth.phase = phase;

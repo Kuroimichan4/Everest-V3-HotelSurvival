@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { characterSheet } from "./character-sheets.js";
 
 const cases = [
-  ["maintenance", "Mantenimiento", "Abrir al menos dos rutas alternativas."],
+  ["maintenance", "Mantenimiento", "Descubrir y revelar al equipo al menos dos rutas alternativas que los demás desconocían."],
   ["medic", "Médico", "Conseguir que sobrevivan todos los heridos atendidos."],
   ["architect-engineer", "Arquitecto / Ingeniero", "Evitar que el grupo atraviese zonas de riesgo estructural extremo."],
   ["bellhop", "Botones", "Conseguir que sobrevivan al menos dos huéspedes adicionales."],

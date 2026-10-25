@@ -55,8 +55,8 @@ export function castVote(state: Decision, input: { attemptId: string; participan
   if (!voter.alive) return reject(state, "dead");
   if (!state.options.some((option) => option.id === input.optionId)) return reject(state, "invalid-option");
   const previous = current.votes.find((vote) => vote.participantId === input.participantId);
-  if (previous) return previous.optionId === input.optionId ? accept(state) : reject(state, "vote-change-pending");
-  const votes = [...current.votes, { participantId: input.participantId, optionId: input.optionId }];
+  if (previous?.optionId === input.optionId) return accept(state);
+  const votes = [...current.votes.filter(vote => vote.participantId !== input.participantId), { participantId: input.participantId, optionId: input.optionId }];
   if (votes.filter((vote) => vote.optionId === input.optionId).length >= current.requiredVotes) {
     const result = { kind: "approved" as const, optionId: input.optionId };
     return accept({ ...replaceLast(state, { ...current, votes, status: "closed", closedAt: input.now, result }), status: "closed", result });

@@ -43,10 +43,12 @@ test.each(["rescue", "abandon"])("mayoría inmediata para %s sin esperar al cuar
   expect(success(checkDeadline(state, "a1", 100000))).toBe(state);
 });
 
-test("no suma opciones distintas ni cuenta reenvíos; cambios de voto pendientes", () => {
+test("no suma opciones distintas ni cuenta reenvíos; sustituye el voto vigente", () => {
   let state = success(vote(initial(), "p0"));
   expect(success(vote(state, "p0"))).toBe(state);
-  rejected(vote(state, "p0", "abandon"), state, "vote-change-pending");
+  state = success(vote(state, "p0", "abandon"));
+  expect(state.attempts[0]!.votes).toHaveLength(1);
+  state = success(vote(state, "p0", "rescue"));
   state = success(vote(state, "p1", "abandon"));
   state = success(vote(state, "p2"));
   state = success(vote(state, "p3", "abandon"));
@@ -61,6 +63,23 @@ test("rechaza no autorizados, muertos y opciones inexistentes sin mutar", () => 
   rejected(vote(state, "p0", "missing"), state, "invalid-option");
   rejected(vote(state, "p0", "rescue", 999), state, "invalid-time");
   rejected(vote(state, "p0", "rescue", NaN), state, "invalid-time");
+});
+
+test("10A: replacing an open vote moves its count and may immediately create the strict majority", () => {
+  let state = success(vote(initial(), "p0", "rescue"));
+  state = success(vote(state, "p1", "rescue"));
+  state = success(vote(state, "p2", "abandon"));
+  const deadline = state.attempts[0]!.deadline;
+  state = success(vote(state, "p0", "abandon"));
+  expect(state.status).toBe("open");
+  expect(state.attempts[0]!.votes).toHaveLength(3);
+  expect(state.attempts[0]!.votes.filter(v => v.optionId === "rescue")).toHaveLength(1);
+  expect(state.attempts[0]!.votes.filter(v => v.optionId === "abandon")).toHaveLength(2);
+  expect(state.attempts[0]!.deadline).toBe(deadline);
+  state = success(vote(state, "p1", "abandon"));
+  expect(state).toMatchObject({ status: "closed", result: { kind: "approved", optionId: "abandon" } });
+  expect(state.attempts[0]!.votes).toHaveLength(3);
+  rejected(vote(state, "p0", "rescue"), state, "closed");
 });
 
 test("60 segundos, segundo intento independiente de 30 segundos y falta definitiva de acuerdo", () => {

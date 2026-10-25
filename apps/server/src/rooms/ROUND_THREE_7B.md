@@ -32,8 +32,8 @@ pero el motor bloquea después el recorrido por el caso aún pendiente.
 
 La identidad del votante se obtiene de su sesión; el payload solo puede contener
 decisionId, attemptId y optionId. Se rechazan votos ajenos, opciones desconocidas,
-intentos antiguos, cambios de voto y repeticiones del mismo voto en un intento
-abierto (`duplicate-vote`), sin alterar la política de las rondas anteriores.
+intentos antiguos. Actualización 10A: en un intento abierto se permite sustituir
+el voto vigente, sin sumar dos votos; el reenvío de la misma opción es idempotente.
 No hay elecciones médicas ni de packs.
 
 Al cerrarse, se registra una sola selección. Una ruta aprobada se entrega al motor

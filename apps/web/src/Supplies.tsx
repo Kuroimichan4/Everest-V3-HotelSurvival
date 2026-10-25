@@ -1,3 +1,4 @@
+import { activeHuman } from "./game-state";
 import { useEffect, useRef, useState } from "react";
 import type { PackInput, PackReply, SuppliesView } from "@everest/shared";
 
@@ -13,7 +14,7 @@ function storedRequest(key: string): PackInput | null {
 
 const errors: Record<string, string> = {
   "no-packs": "No quedan packs disponibles.",
-  "energy-full": "El destinatario ya tiene 100 de energía.",
+  "energy-full": "El destinatario no necesita este pack. No se ha consumido.",
   "character-dead": "No se pueden entregar packs a un personaje fallecido.",
   "target-not-found": "El destinatario no pertenece a esta partida.",
   "supplies-not-open": "La entrega corresponde a una fase cerrada. Reparte durante la preparación de una ruta o después de completarla.",
@@ -32,14 +33,14 @@ export function Supplies({ state, bellhop, enabled, onGive }: {
   const [busy, setBusy] = useState(false);
   const sending = useRef(false);
   const [message, setMessage] = useState("");
-  const living = state.characters.filter(c => c.health > 0 && !c.eliminated);
-  const target = living.find(c => c.participantId === targetId) ?? living.find(c => c.energy < 100) ?? living[0];
+  const living = state.characters.filter(activeHuman);
+  const target = living.find(c => c.participantId === targetId) ?? living.find(c => c.energy !== undefined && c.energy < 100) ?? living[0];
   const unavailable = !enabled ? "Esperando conexión y autenticación del personaje."
     : !state.windowId ? "Reparto cerrado. Disponible durante la preparación de una ruta o después de completarla; no durante votaciones, desplazamientos ni su resolución."
     : pending ? "Hay una entrega pendiente de confirmación."
     : state.inventory.packs === 0 ? "No quedan packs disponibles."
     : !target ? "No hay destinatarios vivos disponibles."
-    : target.energy >= 100 ? "El destinatario ya tiene 100 de energía."
+    : target.energy !== undefined && target.energy >= 100 ? "El destinatario ya tiene 100 de energía."
     : null;
 
   function send(input: PackInput) {
@@ -85,7 +86,7 @@ export function Supplies({ state, bellhop, enabled, onGive }: {
     {bellhop && <div>
       <p role="status">{unavailable ?? "Reparto disponible. Cada pack recupera hasta 25 de energía, con máximo de 100."}</p>
       <label>Destinatario<select value={target?.participantId ?? ""} disabled={!enabled || !state.windowId || busy || !!pending} onChange={event => setTargetId(event.target.value)}>
-        {living.map(c => <option key={c.participantId} value={c.participantId}>{c.name} — {c.energy} de energía</option>)}
+        {living.map(c => <option key={c.participantId} value={c.participantId}>{c.name}{c.energy !== undefined ? ` — ${c.energy} de energía` : ""}</option>)}
       </select></label>
       <button disabled={!!unavailable || busy} onClick={give}>Entregar pack</button>
     </div>}

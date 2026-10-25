@@ -1,3 +1,7 @@
+import { collectObjectiveLedger, recordMaintenanceRevelation, type ObjectiveLedger, type EvidenceContext } from "../simulation/objective-evidence.js";
+import { projectForParticipant } from "./privacy.js";
+import { buildFinalResult, objectiveEvidence } from "../simulation/final-result.js";
+import type { GameFinalResult, PrivateObjectiveEvidence } from "@everest/shared";
 import { RoundFourStage } from "./round-four.js";
 import { beginRoundFour, prepareRescueEffort, resolveRoundFourExit, roundFourRouteAvailability, type RoundFourState } from "../simulation/round-four.js";
 import type { RoundFourView } from "@everest/shared";
@@ -33,6 +37,10 @@ import type { PackInput, PackReply, SuppliesView } from "@everest/shared";
 import type { MedicalView, TreatmentInput, TreatmentReply } from "@everest/shared";
 
 interface Game {
+  finalResult?: GameFinalResult;
+  objectiveLedger?: ObjectiveLedger;
+  finalObjectives?: Map<string, PrivateObjectiveEvidence>;
+  roundTwoNpcStarted?: boolean;
   roundFour?: RoundFourStage;
   roundThreeSummary?: RoundThreeView;
   activities?: GameActivityView["entries"];
@@ -47,7 +55,7 @@ interface Game {
   treatmentRequests: Map<string, TreatmentInput & { actorId: string }>;
   packRequests: Map<string, PackInput & { actorId: string }>;
   roundTwoAfterRoute?: Pick<RoundTwoView, "characters" | "inventory">;
-  route?: { preparationId: string; revealed: boolean; voting?: RoomVoting; options?: RouteChoiceView["options"]; result: RouteChoiceView["result"] };
+  route?: { preparationId: string; revealed: boolean; revealedBy?: string; voting?: RoomVoting; options?: RouteChoiceView["options"]; result: RouteChoiceView["result"] };
   roundOneSummary?: RoundOneSummary;
   voting: RoomVoting;
   id: string;
@@ -75,14 +83,60 @@ export class RoomManager {
 
   onVotingChanged: (code: string) => void = () => {};
   onSuppliesChanged: (code: string) => void = () => {};
+  onFinished: (code: string) => void = () => {};
   constructor(private readonly randomIndex?: RandomIndex, private readonly clock: VotingClock = systemClock,
     private readonly routeRandom: RandomSource = Math.random) {}
 
+  private finishIfTerminal(room: Room) {
+    const game = room.game;
+    if (!game || game.finalResult || game.resolvingMovement) return;
+    const result = buildFinalResult(game.state, room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })),
+      { id: newId(), gameId: game.id, closedAt: this.clock.now(), ventilationRevealed: game.route?.revealed ?? false });
+    if (!result) return;
+    game.finalResult = result;
+    const context: EvidenceContext = {
+      treatments: [...game.treatmentRequests].map(([requestId, r]) => ({ requestId, round: r.round, patientId: r.targetParticipantId, administratorId: r.actorId })),
+      ...(game.roundThree?.selection ? { roundThreeForced: game.roundThree.selection.outcome === "NO_AGREEMENT" } : {}),
+      ...(game.route?.revealed ? { ventilationRevealed: true } : {}),
+      ...(game.route?.revealedBy ? { ventilationRevealedBy: game.route.revealedBy } : {}),
+    };
+    game.objectiveLedger = collectObjectiveLedger(game.state, result, context);
+    game.finalObjectives = new Map(room.participants.map(p => [p.id, objectiveEvidence(game.state, result, p.characterId!, context, game.objectiveLedger)]));
+    game.voting.dispose(); game.route?.voting?.dispose(); game.roundThree?.voting?.dispose(); game.roundFour?.dispose();
+    game.transports?.forEach(t => t.dispose());
+    this.onFinished(room.code);
+  }
+  private publishVoting(room: Room) { this.finishIfTerminal(room); this.onVotingChanged(room.code); }
+  private publishSupplies(room: Room) { this.finishIfTerminal(room); this.onSuppliesChanged(room.code); }
+  finalResult(code: string): GameFinalResult | null {
+    const room = this.rooms.get(code); if (!room) return null;
+    this.finishIfTerminal(room);
+    return room.game?.finalResult ? structuredClone(room.game.finalResult) : null;
+  }
+  finalSession(socketId: string) {
+    const connection = this.connections.get(socketId);
+    return connection ? this.finalResult(connection.room.code) : null;
+  }
+  objectiveSession(socketId: string): PrivateObjectiveEvidence | null {
+    const connection = this.connections.get(socketId);
+    if (!connection || !this.privateRole(socketId)) return null;
+    const evidence = connection.room.game?.finalObjectives?.get(connection.participant.id);
+    return evidence ? structuredClone(evidence) : null;
+  }
+  sessionProjection<T>(socketId: string, payload: T): T {
+    const connection = this.connections.get(socketId);
+    if (!connection) throw new Error("Una proyección requiere sesión autenticada");
+    const actor = connection.room.game?.state.characters.find(c => c.id === connection.participant.characterId);
+    return projectForParticipant(payload, connection.participant.id, !!actor && isAlive(actor) && actor.role === "medic");
+  }
+
   dispose(): void { for (const room of this.rooms.values()) { room.game?.transports?.forEach(t => t.dispose()); room.game?.roundFour?.dispose(); room.game?.voting.dispose(); room.game?.route?.voting?.dispose(); room.game?.roundThree?.voting?.dispose(); } }
   private activeVoting(game: Game): RoomVoting | null {
+    if (game.finalResult) return null;
     const transport = game.transports?.findLast(t => t.route.round === game.state.currentRound && t.phase !== "superseded");
-    if (transport?.route.round === game.state.currentRound && transport.phase !== "completed") return transport.voting ?? null;
+    if (transport?.route.round === game.state.currentRound && transport.phase !== "completed" && transport.voting) return transport.voting;
     if (game.state.currentRound === 4) return game.roundFour?.activeVoting() ?? null;
+    if (game.state.currentRound === 2) return game.route?.result ? game.roundTwoNpcStarted ? game.voting : null : game.route?.voting ?? null;
     return game.state.currentRound === 3 ? game.roundThree?.voting ?? null : game.route?.voting ?? game.voting;
   }
   publicVote(code: string) { const game = this.rooms.get(code)?.game; return game ? this.activeVoting(game)?.publicView() ?? null : null; }
@@ -102,23 +156,15 @@ export class RoomManager {
     const character = room.game!.state.characters.find((entry) => entry.id === participant.characterId);
     if (!character) return { ok: false, error: "not-authorized" };
     if (!isAlive(character)) return { ok: false, error: "dead" };
+    if (room.game!.finalResult) return { ok: false, error: "game-finished" };
     const transport = room.game!.transports?.findLast(t => t.route.round === room.game!.state.currentRound && t.phase !== "superseded");
-    if (transport?.route.round === room.game!.state.currentRound && transport.phase !== "completed") return transport.vote(participant.id, input);
+    if (transport?.route.round === room.game!.state.currentRound && transport.phase !== "completed" && transport.voting) return transport.vote(participant.id, input);
     if (room.game!.state.currentRound === 4) return room.game!.roundFour!.vote(participant.id, input);
     const voting = this.activeVoting(room.game!);
     if (voting && input && typeof input === "object") {
       const candidate = input as { decisionId?: string; optionId?: string };
       const options = room.game!.state.currentRound === 3 ? room.game!.roundThree?.options : room.game!.route?.options;
       if (candidate.decisionId === voting.publicView().decisionId && options?.some(o => o.id === candidate.optionId && o.availability.status === "unavailable")) return { ok: false, error: "invalid-option" };
-    }
-    if (voting && room.game!.state.currentRound === 3 && input && typeof input === "object"
-      && Object.keys(input).sort().join(",") === "attemptId,decisionId,optionId") {
-      const candidate = input as { decisionId: unknown; attemptId: unknown; optionId: unknown };
-      const own = voting.ownView(participant.id);
-      const current = voting.publicView();
-      if (current.status === "open" && current.deadline > this.clock.now() && own.optionId
-        && candidate.decisionId === own.decisionId && candidate.attemptId === own.attemptId
-        && candidate.optionId === own.optionId) return { ok: false, error: "duplicate-vote" };
     }
     return voting ? voting.vote(participant.id, input) : { ok: false, error: "route-not-open" };
   }
@@ -204,7 +250,7 @@ export class RoomManager {
     // Sin await entre validación y escritura: dos peticiones no pueden iniciar dos veces.
     room.game = { id: newId(), packRequests: new Map(), treatmentRequests: new Map(), state: { ...initial, characters },
       voting: new RoomVoting(room.participants.map((player, index) => ({ participantId: player.id, alive: isAlive(characters[index]!) })),
-        this.clock, () => { this.resolveRound(room); this.onVotingChanged(room.code); }) };
+        this.clock, () => { this.resolveRound(room); this.publishVoting(room); }) };
     room.participants.forEach((player, index) => { player.characterId = characters[index]!.id; });
     return { ok: true, value: this.publicRoom(room) };
   }
@@ -216,7 +262,7 @@ export class RoomManager {
       const vote = game.voting.publicView();
       if (!vote.result || game.state.roundTwo?.resolution) return;
       const resolved = resolveRoundTwo(game.state, vote.decisionId, vote.result);
-      if (resolved.ok) { game.state = resolved.state; game.route = { preparationId: newId(), revealed: false, result: null }; }
+      if (resolved.ok) { game.state = resolved.state; this.moveOrPrepare(room); }
       else if (resolved.error === "insufficient-energy") game.state = { ...game.state,
         roundTwo: { ...game.state.roundTwo!, blocked: "insufficient-energy" } };
       return;
@@ -234,6 +280,7 @@ export class RoomManager {
   advanceRound(socketId: string): VoteReply {
     const connection = this.connections.get(socketId);
     if (!connection?.room.game) return { ok: false, error: "invalid-session" };
+    if (connection.room.game.finalResult) return { ok: false, error: "game-finished" };
     const { room, participant } = connection;
     if (participant.id !== room.creatorId) return { ok: false, error: "not-creator" };
     const game = room.game!;
@@ -241,15 +288,21 @@ export class RoomManager {
     const next = beginRoundTwo(game.state);
     if (next === game.state) return { ok: false, error: "round-not-ready" };
     if (!next.characters.some(isAlive)) return { ok: false, error: "no-living-characters-pending" };
-    const voting = new RoomVoting(room.participants.map((player) => ({ participantId: player.id,
-      alive: next.characters.some((character) => character.id === player.characterId && isAlive(character)) })),
-      this.clock, () => { this.resolveRound(room); this.onVotingChanged(room.code); }, 2);
     game.roundOneSummary = this.roundSummary(room.code)!;
     game.voting.dispose();
     game.state = next;
-    game.voting = voting;
-    this.onVotingChanged(room.code);
-    return { ok: true, own: voting.ownView(participant.id) };
+    game.route = { preparationId: newId(), revealed: false, result: null };
+    this.publishVoting(room);
+    return { ok: true, own: game.voting.ownView(participant.id) };
+  }
+
+  private startRoundTwoNpc(room: Room) {
+    const game = room.game!;
+    if (game.roundTwoNpcStarted || !game.route?.result) return;
+    game.roundTwoNpcStarted = true;
+    game.voting = new RoomVoting(room.participants.map(p => ({ participantId: p.id,
+      alive: game.state.characters.some(c => c.id === p.characterId && isAlive(c)) })),
+      this.clock, () => { this.resolveRound(room); this.publishVoting(room); }, 2);
   }
 
   private routeOptions(game: Game): RouteChoiceView["options"] {
@@ -269,6 +322,7 @@ export class RoomManager {
   routeAction(socketId: string, action: "reveal" | "open"): RouteActionReply {
     const connection = this.connections.get(socketId);
     if (!connection?.room.game) return { ok: false, error: "invalid-session" };
+    if (connection.room.game.finalResult) return { ok: false, error: "game-finished" };
     const { room, participant } = connection;
     const game = room.game!;
     if (game.state.currentRound >= 3) return { ok: false, error: "round-not-ready" };
@@ -281,7 +335,7 @@ export class RoomManager {
     if (action === "reveal" && route.revealed) return { ok: true };
     if (action === "open" && route.voting) return { ok: true };
     if (route.voting) return { ok: false, error: "preparation-closed" };
-    if (action === "reveal") route.revealed = true;
+    if (action === "reveal") { game.state = recordMaintenanceRevelation(game.state, { id: "ventilation", round: 2, initiallyPrivate: true }, character.id, this.clock.now()); route.revealed = true; route.revealedBy = character.id; }
     else {
       const options = this.routeOptions(game);
       // Conservar la decisión colectiva incluso si solo queda una alternativa viable.
@@ -291,17 +345,21 @@ export class RoomManager {
         alive: game.state.characters.some(c => c.id === player.characterId && isAlive(c)) })), this.clock, () => {
           const outcome = route.voting!.selectedOption();
           if (outcome && !route.result) route.result = { decisionId: route.voting!.publicView().decisionId, outcome: outcome as RouteId | "NO_AGREEMENT" };
-          if (route.result && !game.state.roundTwo?.movement) this.moveOrPrepare(room);
-          this.onVotingChanged(room.code);
+          if (route.result) {
+            if (game.state.roundTwo?.resolution) this.moveOrPrepare(room);
+            else this.startRoundTwoNpc(room);
+          }
+          this.publishVoting(room);
         }, 2, options.map(o => ({ id: o.id, label: o.name })));
     }
-    this.onVotingChanged(room.code);
+    this.publishVoting(room);
     return { ok: true };
   }
 
   private moveOrPrepare(room: Room): void {
     const game = room.game!;
     if (game.state.currentRound === 4) { this.moveFourth(room); return; }
+    if (game.state.currentRound === 2 && !game.state.roundTwo?.resolution) return;
     if (game.transports?.some(t => t.route.round === game.state.currentRound && t.phase !== "superseded")) return;
     if (game.recovery) return;
     const round = game.state.currentRound;
@@ -314,9 +372,9 @@ export class RoomManager {
     const availability = routeEnergyAvailability(game.state, route.energyCost);
     if (round !== 1 && availability.status === "unavailable") { this.markRecovery(room, availability.reason!); return; }
     const classification = classifyMovement(game.state, route.energyCost);
-    if (classification.ok && classification.classification.transportRequiredIds.length) {
+    if (classification.ok && (round === 2 || classification.classification.transportRequiredIds.length)) {
       const decision = new TransportDecision({ round, id, name: route.name, cost: route.energyCost }, () => game.state,
-        (state, plan) => this.executeMovement(room, state, plan), this.clock, () => { this.noteTransportFailure(room); this.onVotingChanged(room.code); },
+        (state, plan) => this.executeMovement(room, state, plan), this.clock, () => { this.noteTransportFailure(room); this.publishVoting(room); },
         room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })));
       (game.transports ??= []).push(decision);
     } else this.executeMovement(room, game.state);
@@ -349,10 +407,14 @@ export class RoomManager {
   retryRoute(socketId: string, input: unknown): RouteActionReply {
     const connection = this.connections.get(socketId);
     if (!connection?.room.game) return { ok: false, error: "invalid-session" };
+    if (connection.room.game.finalResult) return { ok: false, error: "game-finished" };
     const { room, participant } = connection; const game = room.game!;
     if (!game.state.characters.some(c => c.id === participant.characterId && isAlive(c))) return { ok: false, error: "not-authorized" };
     if (!input || typeof input !== "object" || Object.keys(input).join(",") !== "decisionId" || typeof (input as { decisionId: unknown }).decisionId !== "string") return { ok: false, error: "invalid-input" };
     const decisionId = (input as { decisionId: string }).decisionId;
+    if (game.state.currentRound === 2 && game.state.roundTwo?.blocked && game.voting.publicView().decisionId === decisionId) {
+      this.resolveRound(room); this.publishVoting(room); return game.state.roundTwo.blocked ? { ok: false, error: game.state.roundTwo.blocked } : { ok: true };
+    }
     this.discoverRecovery(room);
     if (game.failedSelections?.some(f => f.decisionId === decisionId)) return { ok: true };
     if (!game.recovery || game.recovery.decisionId !== decisionId || game.state.currentRound === 1 || game.state.currentRound === 4) return { ok: false, error: "route-not-recoverable" };
@@ -380,7 +442,7 @@ export class RoomManager {
       if (round === 2) {
         const { movement: _movement, ...rest } = game.state.roundTwo!;
         game.state = { ...game.state, roundTwo: rest };
-        game.route = { preparationId: newId(), revealed: game.route!.revealed, result: null };
+        game.route = { preparationId: newId(), revealed: game.route!.revealed, ...(game.route!.revealedBy ? { revealedBy: game.route!.revealedBy } : {}), result: null };
       } else {
         const { roundThreeRoute: _route, ...rest } = game.state;
         game.state = rest;
@@ -388,7 +450,7 @@ export class RoomManager {
       }
       delete game.recovery;
     }
-    this.onVotingChanged(room.code); return { ok: true };
+    this.publishVoting(room); return { ok: true };
   }
 
   private executeMovement(room: Room, state: SimulationState, plan?: TransportPlan): string | null {
@@ -433,6 +495,7 @@ export class RoomManager {
     const { room, participant } = connection; const game = room.game!;
     if (!game.state.characters.some(c => c.id === participant.characterId && isAlive(c))) return { ok: false, error: "not-authorized" };
     if (action !== "retry" && participant.id !== room.creatorId) return { ok: false, error: "not-creator" };
+    if (game.finalResult) return { ok: true };
     if (action === "advance") {
       if (game.roundFour) return { ok: true };
       const next = beginRoundFour(game.state, this.routeRandom);
@@ -442,7 +505,7 @@ export class RoomManager {
       game.state = next.state;
       game.roundFour = new RoundFourStage(() => game.state as RoundFourState, state => { game.state = state; },
         room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })),
-        this.clock, () => this.onVotingChanged(room.code), () => this.moveFourth(room));
+        this.clock, () => this.publishVoting(room), () => this.moveFourth(room));
     } else {
       if (game.state.currentRound !== 4 || !game.roundFour) return { ok: false, error: "round-not-ready" };
       if (action === "open") return game.roundFour.open();
@@ -452,7 +515,7 @@ export class RoomManager {
       if (transport && (transport.phase === "voting" || transport.phase === "selection" || transport.phase === "pending")) return { ok: false, error: "transport-vote-pending" };
       return game.roundFour.retry((input as { preparationId: string }).preparationId);
     }
-    this.onVotingChanged(room.code);
+    this.publishVoting(room);
     return { ok: true };
   }
 
@@ -483,7 +546,7 @@ export class RoomManager {
               return after.eliminated && !c.eliminated ? { ...c, eliminated: true, personalItems: after.personalItems ?? [] } : c;
             }) };
           return this.executeFourth(room, candidate, routeId, plan);
-        }, this.clock, () => this.onVotingChanged(room.code),
+        }, this.clock, () => this.publishVoting(room),
         room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })));
       (game.transports ??= []).push(transport);
     } else this.executeFourth(room, state, routeId);
@@ -530,6 +593,7 @@ export class RoomManager {
   openTransport(socketId: string, input: unknown): TransportActionReply {
     const connection = this.connections.get(socketId);
     if (!connection?.room.game) return { ok: false, error: "invalid-session" };
+    if (connection.room.game.finalResult) return { ok: false, error: "game-finished" };
     const game = connection.room.game;
     const actor = game.state.characters.find(c => c.id === connection.participant.characterId);
     if (!actor || !isAlive(actor)) return { ok: false, error: "not-authorized" };
@@ -552,6 +616,7 @@ export class RoomManager {
   roundThreeAction(socketId: string, action: "advance" | "open"): RouteActionReply {
     const connection = this.connections.get(socketId);
     if (!connection?.room.game) return { ok: false, error: "invalid-session" };
+    if (connection.room.game.finalResult) return { ok: false, error: "game-finished" };
     const { room, participant } = connection;
     const game = room.game!;
     if (game.state.currentRound === 4) return { ok: false, error: "round-not-ready" };
@@ -584,10 +649,10 @@ export class RoomManager {
             }
           }
           if (stage.selection && !game.state.roundThreeRoute) this.moveOrPrepare(room);
-          this.onVotingChanged(room.code);
+          this.publishVoting(room);
         }, 3, options.map(route => ({ id: route.id, label: route.name })));
     }
-    this.onVotingChanged(room.code);
+    this.publishVoting(room);
     return { ok: true };
   }
 
@@ -645,8 +710,8 @@ export class RoomManager {
     return { ...this.recoveryView(game, 2), movement: movementView, routeChoice: this.routeView(game), round: 2, npcId: round.npcId, mobility: "walks-with-help",
       npc: resolution?.npc ?? "pending", previousNpc: game.state.roundOne!.npc,
       phase: movement?.status === "completed" ? "completed" : movement ? "movement-blocked"
-        : game.transports?.some(t => t.route.round === 2 && t.phase !== "completed") ? "transport-pending" : resolution ? "route-pending" : round.blocked ? "resolution-blocked" : "rescue-vote",
-      blocked: round.blocked, result: resolution?.result ?? game.voting.publicView().result,
+        : game.transports?.some(t => t.route.round === 2 && t.phase !== "completed") ? "transport-pending" : round.blocked ? "resolution-blocked" : !game.route?.result ? "route-pending" : game.roundTwoNpcStarted && !resolution ? "rescue-vote" : "route-pending",
+      blocked: round.blocked, result: resolution?.result ?? (game.roundTwoNpcStarted ? game.voting.publicView().result : null),
       microearthquake: resolution?.microearthquake ?? false,
       inventory: { ...(game.roundTwoAfterRoute?.inventory ?? game.state.inventory) },
       characters: game.roundTwoAfterRoute ? structuredClone(game.roundTwoAfterRoute.characters) : room.participants.map((participant) => {
@@ -689,9 +754,9 @@ export class RoomManager {
     const movement = game.state.roundTwo?.movement;
     const transport = game.transports?.findLast(t => t.route.round === game.state.currentRound && t.phase !== "superseded");
     const transportCurrent = transport?.route.round === game.state.currentRound && transport.phase !== "completed";
-    const windowId = game.state.currentRound === 4 ? this.fourthWindow(game) : game.resolvingMovement ? null : game.recovery ? game.recovery.preparationId : transportCurrent ? (transport.phase === "preparation" ? transport.preparationId : null) : game.state.currentRound === 1 ? game.state.roundOne?.decisionId ?? null
+    const windowId = game.finalResult ? null : game.state.currentRound === 4 ? this.fourthWindow(game) : game.resolvingMovement ? null : game.recovery ? game.recovery.preparationId : transportCurrent ? (transport.phase === "preparation" ? transport.preparationId : null) : game.state.currentRound === 1 ? game.state.roundOne?.decisionId ?? null
       : game.state.currentRound === 2 ? movement?.status === "completed" ? movement.decisionId
-        : game.route && !game.route.voting ? game.route.preparationId : null
+        : game.state.roundTwo?.blocked ? game.route?.preparationId ?? null : game.route && !game.route.voting ? game.route.preparationId : null
       : game.state.roundThreeRoute?.status === "completed" ? game.state.roundThreeRoute.outcome.requestId
         : game.roundThree && !game.roundThree.voting ? game.roundThree.preparationId : null;
     return { gameId: game.id, round: game.state.currentRound, windowId,
@@ -749,6 +814,7 @@ export class RoomManager {
     }
     const target = room.participants.find(player => player.id === candidate.targetParticipantId);
     if (!target?.characterId) return { ok: false, error: "target-not-found" };
+    if (game.finalResult) return { ok: false, error: "supplies-not-open" };
     const treatment = administerTreatment(game.state, target.characterId);
     if (!treatment.ok) return { ok: false, error: treatment.error };
     const restored = treatment.state.characters.find(c => c.id === target.characterId)!.health - game.state.characters.find(c => c.id === target.characterId)!.health;
@@ -756,7 +822,7 @@ export class RoomManager {
     game.state = treatment.state;
     game.treatmentRequests.set(candidate.requestId, { ...candidate, actorId: participant.id });
     (game.activities ??= []).push({ id: `treatment:${candidate.requestId}`, round: game.state.currentRound, kind: "treatment", targetParticipantId: target.id, restored });
-    this.onSuppliesChanged(room.code);
+    this.publishSupplies(room);
     return { ok: true, requestId: candidate.requestId };
   }
 
@@ -781,6 +847,7 @@ export class RoomManager {
     if (this.suppliesView(room.code)?.windowId !== candidate.windowId) return { ok: false, error: "supplies-not-open" };
     const target = room.participants.find(player => player.id === candidate.targetParticipantId);
     if (!target?.characterId) return { ok: false, error: "target-not-found" };
+    if (game.finalResult) return { ok: false, error: "supplies-not-open" };
     const consumed = consumePack(game.state, target.characterId);
     if (!consumed.ok) return { ok: false, error: consumed.error };
     const restored = consumed.state.characters.find(c => c.id === target.characterId)!.energy - game.state.characters.find(c => c.id === target.characterId)!.energy;
@@ -788,7 +855,7 @@ export class RoomManager {
     game.state = consumed.state;
     game.packRequests.set(candidate.requestId, { ...candidate, actorId: participant.id });
     (game.activities ??= []).push({ id: `pack:${candidate.requestId}`, round: game.state.currentRound, kind: "pack", targetParticipantId: target.id, restored });
-    this.onSuppliesChanged(room.code);
+    this.publishSupplies(room);
     return { ok: true, requestId: candidate.requestId };
   }
 

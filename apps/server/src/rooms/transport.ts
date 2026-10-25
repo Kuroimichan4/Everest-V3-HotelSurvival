@@ -106,7 +106,6 @@ export class TransportDecision {
         const option = this.options.find(o => o.id === candidate.optionId);
         if (option?.viable === false) return { ok: false, error: "transport-plan-infeasible" };
         if (option && option.transported.length && !option.plan.carrierIds.some(id => this.people.some(p => p.characterId === id && p.participantId === participantId))) return { ok: false, error: "not-authorized-for-plan" };
-        if (this.voting.ownView(participantId).optionId === candidate.optionId) return { ok: false, error: "duplicate-vote" };
       }
     }
     return this.voting.vote(participantId, input);

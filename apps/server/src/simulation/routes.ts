@@ -26,6 +26,9 @@ const routes: readonly RouteDefinition[] = [
     specialists: ["architect-engineer", "maintenance"] },
 ];
 
+/** Solo para evidencias internas; nunca incluir en las vistas de rutas. */
+export function internalRouteRisk(id: string) { return routes.find(route => route.id === id)?.danger ?? null; }
+
 export type RouteError = OperationError | "unknown-route" | "no-living-characters"
   | "specialist-availability-pending" | "invalid-route-effects" | "invalid-random";
 export type RouteResult =

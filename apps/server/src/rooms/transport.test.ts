@@ -31,15 +31,23 @@ function setup(round: 1 | 2 | 3 = 3, energies = [0, 100, 100, 100], route = "fir
     const current = manager.publicVote(code)!;
     return voters.map(i => manager.vote(`s${i}`, { decisionId: current.decisionId, attemptId: current.attemptId, optionId }));
   };
-  if (round > 1) { vote("abandon"); manager.advanceRound("s0"); vote("abandon"); }
-  if (round === 3) { manager.routeAction("s0", "open"); vote("unstable-corridor"); manager.roundThreeAction("s0", "advance"); }
+  if (round > 1) { vote("abandon"); manager.advanceRound("s0"); }
+  if (round === 3) { manager.routeAction("s0", "open"); vote("unstable-corridor"); vote("abandon"); manager.openTransport("s0", { preparationId: manager.transportView(code)!.cases.at(-1)!.preparationId }); manager.roundThreeAction("s0", "advance"); }
   const roles = [0, 1, 2, 3].map(i => manager.privateRole(`s${i}`)!.role);
   change(s => ({ ...s, characters: s.characters.map((c, i) => ({ ...c, energy: energies[i]!, health: dead.includes(i) ? 0 : c.health })) }));
   random.mockClear();
   if (round === 1) vote(rescue, [0, 1, 2, 3].filter(i => !dead.includes(i)).slice(0, Math.floor((4 - dead.length) / 2) + 1));
   else {
     const opened = round === 2 ? manager.routeAction("s0", "open") : manager.roundThreeAction("s0", "open");
-    if (opened.ok) vote(round === 2 ? "unstable-corridor" : route, [0, 1, 2, 3].filter(i => !dead.includes(i)).slice(0, Math.floor((4 - dead.length) / 2) + 1));
+    if (opened.ok) {
+      const voters = [0, 1, 2, 3].filter(i => !dead.includes(i)).slice(0, Math.floor((4 - dead.length) / 2) + 1);
+      vote(round === 2 ? "unstable-corridor" : route, voters);
+      if (round === 2) {
+        vote("abandon", voters);
+        const prep = manager.transportView(code)!.cases.at(-1);
+        if (prep && !prep.exhaustedIds.length) manager.openTransport("s0", { preparationId: prep.preparationId });
+      }
+    }
   }
   const view = () => manager.transportView(code)!.cases.at(-1)!;
   const supplies = () => manager.suppliesView(code)!;
@@ -50,7 +58,8 @@ function setup(round: 1 | 2 | 3 = 3, energies = [0, 100, 100, 100], route = "fir
 
 test.each([1, 2, 3] as const)("ronda %i sin agotados sigue normal y no crea votación adicional", round => {
   const f = setup(round, [100, 100, 100, 100]);
-  expect(f.manager.transportView(f.code)).toEqual({ cases: [] });
+  if (round === 1) expect(f.manager.transportView(f.code)).toEqual({ cases: [] });
+  else expect(f.manager.transportView(f.code)!.cases.at(-1)).toMatchObject({ phase: "completed", decisions: [] });
   expect(f.supplies().windowId).not.toBeNull();
   expect(round === 1 ? f.manager.roundSummary(f.code)!.completed : round === 2 ? f.manager.roundTwoView(f.code)!.phase === "completed" : f.manager.roundThreeView(f.code)!.phase === "completed").toBe(true);
 });
@@ -68,7 +77,8 @@ test.each([1, 2, 3] as const)("ronda %i conserva ruta, no cobra antes de votar y
   const current = f.view().vote!;
   expect(f.vote("carry-all", [1])[0]!.ok).toBe(true);
   expect(f.view().phase).toBe("voting");
-  expect(f.vote("carry-all", [1])[0]).toEqual({ ok: false, error: "duplicate-vote" });
+  expect(f.vote("carry-all", [1])[0]!.ok).toBe(true);
+  expect(f.view().vote!.status).toBe("open");
   expect(f.vote("carry-all", [2])[0]!.ok).toBe(true);
   const final = f.view(); const state = f.state(); const calls = f.random.mock.calls.length;
   expect(final).toMatchObject({ phase: "completed", routeId, transportedIds: [f.id(0)], abandonedIds: [] });
@@ -169,7 +179,7 @@ test.each([
   { energies: [0, 0, 0, 0], dead: [1, 2, 3], reason: "no-eligible-carriers" },
 ])("bloqueo seguro $reason sin abandono ni costes", ({ energies, dead, reason }) => {
   const f = setup(3, energies, "fire-door", dead); const before = f.state();
-  expect(f.manager.transportView(f.code)!.cases).toEqual([]);
+  expect(f.manager.transportView(f.code)!.cases.filter(c => c.round === 3)).toEqual([]);
   expect(f.manager.roundThreeView(f.code)!.options.every(o => o.availability.status === "unavailable")).toBe(true);
   expect(f.manager.roundThreeView(f.code)!.options[0]!.availability.reason).toBe(reason === "more-than-two-exhausted" ? reason : "route-energy-insufficient");
   expect(f.manager.roundThreeAction("s0", "open")).toEqual({ ok: false, error: "no-available-routes" });
@@ -303,4 +313,18 @@ test("8C: solo poder pagar uno no permite votar ni ejecutar el transporte de dos
   expect(f.state()).toBe(before); expect(f.random).not.toHaveBeenCalled();
   f.vote("carry-one", [2, 3]); f.vote("person-0", [2, 3]);
   expect(f.supplies().characters.map(c => c.energy)).toEqual([0, 0, 14, 0]);
+});
+
+test("10A: changing an open transport vote preserves authorization for each alternative", () => {
+  const f = setup(3, [0, 0, 60, 45]); f.open("s2");
+  expect(f.vote("leave-all", [3])[0]!.ok).toBe(true);
+  expect(f.vote("carry-all", [3])[0]).toEqual({ ok: false, error: "not-authorized-for-plan" });
+  expect(f.manager.votingSession("s3")!.own.optionId).toBe("leave-all");
+  expect(f.vote("carry-one", [3])[0]!.ok).toBe(true);
+  expect(f.view().phase).toBe("voting");
+  expect(f.manager.votingSession("s3")!.own.optionId).toBe("carry-one");
+  expect(f.vote("carry-one", [2])[0]!.ok).toBe(true);
+  expect(f.view().phase).toBe("selection");
+  f.vote("person-0", [2, 3]);
+  expect(f.view().transportedIds).toEqual([f.id(0)]);
 });

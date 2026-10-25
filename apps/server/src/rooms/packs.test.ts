@@ -101,16 +101,17 @@ test("recursos actuales pasan a ronda 2 sin modificar la historia ni reabrir ven
   const afterPack = f.view();
   expect(f.manager.roundSummary(f.code)).toEqual(history);
   expect(f.manager.advanceRound("s0").ok).toBe(true);
-  expect(f.view().windowId).toBeNull();
+  expect(f.view().windowId).not.toBeNull();
   expect(f.view().characters).toEqual(afterPack.characters);
   expect(f.view().inventory).toEqual(afterPack.inventory);
   expect(f.give({ ...firstRequest, requestId: randomUUID() })).toEqual({ ok: false, error: "supplies-not-open" });
   expect(f.give(firstRequest).ok).toBe(true); // Solo confirma el recibo, nunca aplica otro pack.
-  f.finishVote("rescue");
   expect(f.give({ ...f.input(), windowId: firstRequest.windowId })).toEqual({ ok: false, error: "supplies-not-open" });
   expect(f.manager.routeAction("s0", "open").ok).toBe(true);
   expect(f.give()).toEqual({ ok: false, error: "supplies-not-open" });
   f.finishVote("unstable-corridor");
+  f.finishVote("rescue");
+  f.manager.openTransport("s0", { preparationId: f.manager.transportView(f.code)!.cases.at(-1)!.preparationId });
   expect(f.view().windowId).not.toBe(firstRequest.windowId);
   expect(f.give({ ...firstRequest, requestId: randomUUID() })).toEqual({ ok: false, error: "supplies-not-open" });
   const historyTwo = f.manager.roundTwoView(f.code)!;
@@ -124,8 +125,10 @@ test("recursos actuales pasan a ronda 2 sin modificar la historia ni reabrir ven
 
 test("una ruta bloqueada no habilita packs", () => {
   const f = setup(() => NaN); f.finishVote("rescue");
-  f.manager.advanceRound("s0"); f.finishVote("rescue");
+  f.manager.advanceRound("s0");
   f.manager.routeAction("s0", "open"); f.finishVote("unstable-corridor");
+  f.finishVote("rescue");
+  f.manager.openTransport("s0", { preparationId: f.manager.transportView(f.code)!.cases.at(-1)!.preparationId });
   expect(f.manager.roundTwoView(f.code)?.phase).toBe("movement-blocked");
   expect(f.view().windowId).toBeNull();
   expect(f.give()).toEqual({ ok: false, error: "supplies-not-open" });

@@ -1,3 +1,4 @@
+import { activeHuman } from "./game-state";
 import { useEffect, useRef, useState } from "react";
 import type { MedicalView, TreatmentInput, TreatmentReply } from "@everest/shared";
 
@@ -35,8 +36,8 @@ export function Medical({ state, medic, enabled, canTreat = true, onTreat }: {
   const sending = useRef(false);
   const [message, setMessage] = useState("");
   const treated = new Set(state.treatments.filter(t => t.round === state.round).map(t => t.participantId));
-  const living = state.characters.filter(c => c.health > 0 && !c.eliminated);
-  const target = living.find(c => c.participantId === targetId) ?? living.find(c => c.health < 100 && !treated.has(c.participantId)) ?? living[0];
+  const living = state.characters.filter(activeHuman);
+  const target = living.find(c => c.participantId === targetId) ?? living.find(c => c.health !== undefined && c.health < 100 && !treated.has(c.participantId)) ?? living[0];
 
   function send(input: TreatmentInput) {
     if (!medic || !enabled || sending.current) return;
@@ -75,7 +76,7 @@ export function Medical({ state, medic, enabled, canTreat = true, onTreat }: {
       <label>Paciente<select value={target?.participantId ?? ""} disabled={!enabled || busy || !!pending} onChange={event => setTargetId(event.target.value)}>
         {living.map(c => <option key={c.participantId} value={c.participantId}>{c.name} — {c.health} de salud{treated.has(c.participantId) ? " (ya tratado)" : ""}</option>)}
       </select></label>
-      <button disabled={!enabled || !canTreat || busy || !!pending || !target || target.health >= 100 || treated.has(target.participantId) || state.inventory.medicalUnits === 0} onClick={treat}>Administrar tratamiento</button>
+      <button disabled={!enabled || !canTreat || busy || !!pending || !target || target.health !== undefined && target.health >= 100 || treated.has(target.participantId) || state.inventory.medicalUnits === 0} onClick={treat}>Administrar tratamiento</button>
       {!canTreat && <p className="muted">Los nuevos tratamientos están cerrados en esta fase. Puedes recuperar la confirmación de una solicitud pendiente.</p>}
       {state.inventory.medicalUnits === 0 && <p>No quedan unidades médicas.</p>}
       {target && treated.has(target.participantId) && <p>El destinatario ya recibió su unidad médica en esta ronda.</p>}

@@ -1,6 +1,6 @@
 import type { Socket } from "socket.io-client";
 import type { ClientToServerEvents, ServerToClientEvents } from "@everest/shared";
-import type { GameUpdate } from "./game-state";
+import type { GameUpdate } from "./game-state.js";
 
 export type GameSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 /** La conexión pertenece al Lobby. Cada alta tiene una baja exacta, también bajo StrictMode. */
@@ -22,6 +22,10 @@ export function bindGameSocket(socket: GameSocket, dispatch: (event: GameUpdate)
   const medical: ServerToClientEvents["medical:updated"] = value => push({ type: "medical", value });
   const transport: ServerToClientEvents["transport:updated"] = value => push({ type: "transport", value });
   const activity: ServerToClientEvents["game:activity"] = value => push({ type: "activity", value });
+  const final: ServerToClientEvents["game:finished"] = value => push({ type: "final", value });
+  const objective: ServerToClientEvents["game:objective"] = value => {
+    if (value.participantId === lifecycle.participantId()) push({ type: "objective", value });
+  };
   const connect = () => { if (active) lifecycle.connect(); };
   const disconnect = () => { if (active) { push({ type: "disconnect" }); lifecycle.disconnect(); } };
   const error = () => { if (active) lifecycle.error(); };
@@ -31,6 +35,7 @@ export function bindGameSocket(socket: GameSocket, dispatch: (event: GameUpdate)
   socket.on("round-two:updated", second); socket.on("round-three:updated", third); socket.on("round-four:updated", fourth);
   socket.on("supplies:updated", supplies); socket.on("medical:updated", medical);
   socket.on("transport:updated", transport); socket.on("game:activity", activity);
+  socket.on("game:finished", final); socket.on("game:objective", objective);
   return () => {
     active = false;
     socket.off("connect", connect); socket.off("disconnect", disconnect); socket.off("connect_error", error);
@@ -39,5 +44,6 @@ export function bindGameSocket(socket: GameSocket, dispatch: (event: GameUpdate)
     socket.off("round-two:updated", second); socket.off("round-three:updated", third); socket.off("round-four:updated", fourth);
     socket.off("supplies:updated", supplies); socket.off("medical:updated", medical);
     socket.off("transport:updated", transport); socket.off("game:activity", activity);
+    socket.off("game:finished", final); socket.off("game:objective", objective);
   };
 }

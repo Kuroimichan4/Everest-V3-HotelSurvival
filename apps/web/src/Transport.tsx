@@ -11,7 +11,7 @@ export function Transport({ state, participantId, own, enabled, busy, onOpen, on
   const eligible = current.eligibleIds.includes(participantId);
   const voting = current.phase === "voting" || current.phase === "selection";
   return <section aria-label="Transporte de compañeros agotados">
-    <p className="eyebrow">DECISIÓN DE TRANSPORTE</p><h2>{current.phase === "selection" ? "¿A quién transportamos?" : "Que nadie se quede atrás"}</h2>
+    <p className="eyebrow">PREPARACIÓN DEL DESPLAZAMIENTO</p><h2>{!current.exhaustedIds.length ? "Preparad el desplazamiento" : current.phase === "selection" ? "¿A quién transportamos?" : "Que nadie se quede atrás"}</h2>
     <p className="action-description">{current.routeName} · Coste normal: {current.routeCost} de energía.</p>
     <p>Necesitan ayuda: <strong>{names(current.exhaustedIds)}</strong>.</p>
     {current.phase === "preparation" && <>

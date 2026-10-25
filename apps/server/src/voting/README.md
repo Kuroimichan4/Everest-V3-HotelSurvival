@@ -12,7 +12,7 @@ Todas las operaciones devuelven un nuevo estado cuando hay cambios; los rechazos
 
 ## Pendientes y límites provisionales
 
-- Cambiar de voto: política de producto PENDIENTE; provisionalmente se devuelve `vote-change-pending`, sin sustituir el voto registrado.
+- Actualización 10A: mientras el intento esté abierto, un voto nuevo sustituye al anterior del mismo participante. Reenviar la misma opción no suma votos. Alcanzar mayoría sigue cerrando inmediatamente; no se cambia el plazo.
 - Fallecimiento durante un intento y recálculo del electorado: PENDIENTES. La API trabaja únicamente con una instantánea estable; tampoco actualiza vivos entre intentos. No usarla con cambios de vida hasta definir esa integración.
 - Visibilidad de votos individuales: PENDIENTE. Este estado es interno y no debe emitirse directamente a clientes.
 - Electorados especiales, votaciones médicas y reglas de ronda 4: no implementados. Sus futuras políticas y consecuencias deberán definirse antes de extender el motor.

@@ -36,7 +36,7 @@ export type Decision = DecisionBase & (
 );
 export type VotingError = "invalid-definition" | "invalid-time" | "invalid-electorate"
   | "wrong-attempt" | "closed" | "expired" | "not-authorized" | "dead"
-  | "invalid-option" | "vote-change-pending" | "retry-not-available" | "duplicate-attempt";
+  | "invalid-option" | "retry-not-available" | "duplicate-attempt";
 export type VotingOperation =
   | { readonly ok: true; readonly state: Decision }
   | { readonly ok: false; readonly error: VotingError; readonly state: Decision };

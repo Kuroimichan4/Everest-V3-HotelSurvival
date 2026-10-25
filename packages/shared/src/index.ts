@@ -47,6 +47,8 @@ export interface ClientToServerEvents {
 }
 
 export interface ServerToClientEvents {
+  "game:finished": (result: GameFinalResult) => void;
+  "game:objective": (evidence: PrivateObjectiveEvidence) => void;
   "round-four:updated": (state: RoundFourView) => void;
   "game:activity": (state: GameActivityView) => void;
   "transport:updated": (state: TransportView) => void;
@@ -63,10 +65,39 @@ export interface ServerToClientEvents {
   "game:role": (assignment: PrivateRole) => void;
 }
 
+export interface FinalHuman {
+  participantId: string; name: string; role: AssignedRole;
+  status: "evacuated" | "dead" | "abandoned" | "active";
+  health?: number; energy?: number;
+}
+export interface FinalNpc {
+  round: 1 | 2 | 4;
+  status: "not-encountered" | "absent" | "pending" | "approved" | "rescued" | "abandoned" | "dead";
+  /** null: el motor no registra su llegada a la calle. */
+  evacuated: boolean | null;
+}
+export interface GameFinalResult {
+  id: string; gameId: string; closedAt: number; round: 1 | 2 | 3 | 4;
+  kind: "evacuation-completed" | "no-active-humans";
+  humans: FinalHuman[]; npcs: FinalNpc[];
+  counts: { evacuated: number; dead: number; abandoned: number; rescuedNpcs: number; evacuatedNpcs: number };
+  inventory: { packs: number; medicalUnits: number }; crowbar: "available" | "lost";
+  lastMovement: { routeName: string; completed: boolean; accident: boolean; victimIds: string[] } | null;
+  decisions: string[];
+}
+/** Exclusivo del destinatario autorizado; nunca incluir en el resultado público. */
+export interface PrivateObjectiveEvidence {
+  resultId: string; participantId: string; objective: string;
+  gameId?: string;
+  evaluation: "fulfilled" | "unfulfilled" | "pending-evaluation";
+  evidenceState: "confirmed" | "insufficient";
+  facts: string[]; missing: string[];
+}
+
 export interface GameActivityView {
   gameId: string;
   tools: { crowbar: "available" | "lost" };
-  entries: { id: string; round: 1 | 2 | 3 | 4; kind: "pack" | "treatment"; targetParticipantId: string; restored: number }[];
+  entries: { id: string; round: 1 | 2 | 3 | 4; kind: "pack" | "treatment"; targetParticipantId: string; restored?: number }[];
 }
 
 export interface TransportCaseView {
@@ -79,13 +110,13 @@ export interface TransportCaseView {
   reason: string | null;
   exhaustedIds: string[];
   eligibleIds: string[];
-  people: { participantId: string; name: string; energy: number }[];
+  people: { participantId: string; name: string; energy?: number }[];
   options: { id: string; label: string; viable: boolean; carrierIds: string[]; carrierCost: number; authorizedVoterIds: string[] }[];
   vote: PublicVote | null;
   decisions: { stage: "transport" | "recipient"; vote: PublicVote; outcome: string | null }[];
   transportedIds: string[];
   abandonedIds: string[];
-  charges: { participantId: string; kind: "walking" | "carrier" | "transported"; routeEnergy: number; transportEnergy: number }[];
+  charges: { participantId: string; kind: "walking" | "carrier" | "transported"; routeEnergy?: number; transportEnergy?: number }[];
   transfers: { participantId: string; items: { id: string; kind: string }[] }[];
 }
 export interface TransportView { cases: TransportCaseView[] }
@@ -161,7 +192,7 @@ export interface MedicalView {
   round: 1 | 2 | 3 | 4;
   characters: RoundOneSummary["characters"];
   inventory: RoundOneSummary["inventory"];
-  treatments: { round: 1 | 2 | 3 | 4; participantId: string; healthRestored: number }[];
+  treatments: { round: 1 | 2 | 3 | 4; participantId: string; healthRestored?: number }[];
 }
 export type PackReply = { ok: true; requestId: string } | { ok: false; error: string };
 /** Estado actual público, separado de las instantáneas históricas al terminar rutas. */
@@ -185,7 +216,7 @@ export interface RoundOneSummary {
   npc: "rescued" | "abandoned";
   microearthquake: boolean;
   costs: { rescueEnergy: number; movementEnergy: number; damage: number };
-  characters: { participantId: string; name: string; health: number; energy: number; eliminated?: boolean }[];
+  characters: { participantId: string; name: string; health?: number; energy?: number; status?: "active" | "dead" | "abandoned"; eliminated?: boolean }[];
   inventory: { packs: number; medicalUnits: number };
 }
 
@@ -195,7 +226,7 @@ export interface RoundTwoView {
   movement: {
     status: "completed"; decisionId: string; routeId: RouteId; routeName: string;
     forced: boolean; microearthquake: boolean; accident: boolean; energyCost: number;
-    victims: { participantId: string; name: string; damage: number }[];
+    victims: { participantId: string; name: string; damage?: number }[];
   } | { status: "blocked"; decisionId: string; reason: string } | null;
   routeChoice: RouteChoiceView | null;
   round: 2;
@@ -238,7 +269,7 @@ export interface RoundFourView {
   blocked: string | null;
   movement: {
     requestId: string; routeId: ExitRouteId; energyCost: number; accident: boolean;
-    victims: { participantId: string; damage: number }[];
+    victims: { participantId: string; damage?: number }[];
     deceasedIds: string[]; escapedHumanIds: string[]; rescuedNpc: boolean;
     characters: RoundOneSummary["characters"]; inventory: RoundOneSummary["inventory"];
     crowbar: "available" | "lost";
@@ -257,8 +288,8 @@ export interface RoundThreeView {
   blockedRoutes: RoundThreeRouteId[];
   movement: {
     routeId: RoundThreeRouteId; energyCost: number; accident: boolean;
-    victims: { participantId: string; name: string; damage: number }[];
-    environment: { participantId: string; name: string; damage: number }[];
+    victims: { participantId: string; name: string; damage?: number }[];
+    environment: { participantId: string; name: string; damage?: number }[];
     gained: RoundOneSummary["inventory"];
     crowbarLost: boolean; returnBlocked: boolean;
     discovery: "medical-conference-room" | "supply-warehouse" | null;

@@ -101,8 +101,9 @@ test("recibos y límite sobreviven a reconexión; solo se permite otra unidad en
   expect(f.view().characters[f.medic]!.health).toBe(90);
   expect(f.view().inventory.medicalUnits).toBe(2);
   expect(f.view().treatments.map(t => t.round)).toEqual([1, 2]);
-  f.finishVote("rescue");
   f.manager.routeAction("s0", "open"); f.finishVote("unstable-corridor");
+  f.finishVote("rescue");
+  f.manager.openTransport("s0", { preparationId: f.manager.transportView(f.code)!.cases.at(-1)!.preparationId });
   const historicalTwo = f.manager.roundTwoView(f.code)!;
   const rolls = f.random.mock.calls.length;
   const vote = f.manager.publicVote(f.code)!;

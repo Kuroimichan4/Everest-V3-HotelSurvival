@@ -12,6 +12,10 @@ export interface HumanCharacter {
 }
 
 export interface IndividualItem { readonly id: string; readonly kind: string }
+export interface RouteRevelation {
+  readonly routeId: string; readonly round: 1 | 2 | 3 | 4 | 5 | 6;
+  readonly characterId: string; readonly initiallyUnknownToOthers: boolean; readonly sharedAt: number;
+}
 
 export interface SharedInventory {
   readonly packs: number;
@@ -19,6 +23,7 @@ export interface SharedInventory {
 }
 
 export interface SimulationState<Round extends 1 | 2 | 3 | 4 = 1 | 2 | 3 | 4> {
+  readonly routeRevelations?: readonly RouteRevelation[];
   readonly sharedItems?: readonly IndividualItem[];
   readonly roundOnePreparation?: { readonly decisionId: string; readonly result: import("@everest/shared").RescueOutcome };
   readonly transportMovements?: readonly import("./transport-movement.js").TransportMovementRecord[];

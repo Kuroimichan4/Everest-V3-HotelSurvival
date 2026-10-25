@@ -5,14 +5,15 @@ import { RouteAvailabilityNotice, RouteRecoveryPanel } from "./RouteAvailability
 import { reasonLabel } from "./game-state";
 export function RoundTwo({ state, vote, own, enabled, busy, onVote, maintenance, creator, onRouteAction, onRetry }: {
   onRetry?: (decisionId: string) => void; maintenance: boolean; creator: boolean; onRouteAction: (action: "reveal" | "open") => void;
-  state: RoundTwoView; vote: PublicVote; own: OwnVote | null; enabled: boolean; busy: boolean; onVote: (option: string) => void;
+  state: RoundTwoView; vote: PublicVote | null; own: OwnVote | null; enabled: boolean; busy: boolean; onVote: (option: string) => void;
 }) {
-  if (state.phase === "rescue-vote") return <RoundOne summary={null} vote={vote} own={own} enabled={enabled} busy={busy} onVote={onVote} />;
+  if (state.phase === "rescue-vote" && vote) return <RoundOne summary={null} vote={vote} own={own} enabled={enabled} busy={busy} onVote={onVote} />;
   const route = state.routeChoice;
   const description = (id: string) => id === "ventilation" ? "Paso por los conductos revelados al equipo." : id === "shoring" ? "Despejar escombros y apuntalar el paso." : "Continuar por el pasillo principal.";
   return <section aria-label="Elección de ruta de ronda 2">
     <p className="eyebrow">PASILLO PRINCIPAL</p><h2>{route?.phase === "voting" ? "Elegid un camino" : "Preparad la siguiente ruta"}</h2>
     {state.blocked && <p role="alert">{reasonLabel(state.blocked)}</p>}
+    {state.blocked && vote && <button disabled={!enabled || busy} onClick={() => onRetry?.(vote.decisionId)}>Reintentar la decisión del superviviente</button>}
     <RouteRecoveryPanel recovery={state.recovery} enabled={enabled} busy={busy} onRetry={onRetry} />
     {route?.phase === "preparation" && <>
       <p className="action-description">Compartid la información que decidáis revelar y preparad la energía del equipo.</p>

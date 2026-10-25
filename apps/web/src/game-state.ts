@@ -1,13 +1,19 @@
 import type { GameActivityView, MedicalView, OwnVote, PrivateRole, PublicRoom, PublicVote, RoundOneSummary, RoundTwoView, RoundThreeView, RoundFourView, SuppliesView, TransportView } from "@everest/shared";
+import type { GameFinalResult, PrivateObjectiveEvidence } from "@everest/shared";
 
 export interface GameState {
+  final: GameFinalResult | null; objective: PrivateObjectiveEvidence | null;
   room: PublicRoom | null; role: PrivateRole | null; vote: PublicVote | null; ownVote: OwnVote | null;
   roundFour: RoundFourView | null;
   summary: RoundOneSummary | null; roundTwo: RoundTwoView | null; roundThree: RoundThreeView | null;
   supplies: SuppliesView | null; medical: MedicalView | null; transport: TransportView | null; activity: GameActivityView | null;
 }
-export const emptyGame: GameState = { room: null, role: null, vote: null, ownVote: null, roundFour: null, summary: null, roundTwo: null, roundThree: null, supplies: null, medical: null, transport: null, activity: null };
+export const emptyGame: GameState = { final: null, objective: null, room: null, role: null, vote: null, ownVote: null, roundFour: null, summary: null, roundTwo: null, roundThree: null, supplies: null, medical: null, transport: null, activity: null };
 export type GameUpdate = { [K in keyof GameState]: { type: K; value: GameState[K] } }[keyof GameState] | { type: "disconnect" } | { type: "clear" };
+
+export function activeHuman(c: { health?: number; status?: string; eliminated?: boolean }) {
+  return !c.eliminated && c.status !== "dead" && c.status !== "abandoned" && c.health !== 0;
+}
 
 /** Cada evento sustituye su instantánea. Nunca acumular paneles ni resultados recibidos. */
 export function gameReducer(state: GameState, action: GameUpdate): GameState {
@@ -18,11 +24,14 @@ export function gameReducer(state: GameState, action: GameUpdate): GameState {
 }
 
 export function activeScene(state: GameState) {
-  const round = state.supplies?.round ?? state.roundFour?.round ?? state.roundThree?.round ?? state.roundTwo?.round ?? 1;
+  // La fase autoritativa de ronda 4 prevalece sobre instantáneas auxiliares atrasadas.
+  const round = state.roundFour?.round ?? state.supplies?.round ?? state.roundThree?.round ?? state.roundTwo?.round ?? 1;
   const transport = state.transport?.cases.findLast(c => c.round === round && c.phase !== "superseded");
   const recovery = round === 3 ? state.roundThree?.recovery : round === 2 ? state.roundTwo?.recovery : undefined;
   const completed = round === 4 ? state.roundFour?.phase === "completed" : round === 3 ? state.roundThree?.phase === "completed" : round === 2 ? state.roundTwo?.phase === "completed" : !!state.summary;
-  const kind = recovery ? "recovery" : completed ? "completed" : transport && transport.phase !== "completed" && !(round === 4 && transport.phase === "blocked") ? "transport"
+  const transportActive = transport && transport.phase !== "completed"
+    && (round !== 4 || (state.roundFour?.phase === "transport" && transport.phase !== "blocked"));
+  const kind = recovery ? "recovery" : completed ? "completed" : transportActive ? "transport"
     : round === 4 ? "round-four" : round === 3 ? "route-three" : round === 2 && state.roundTwo?.phase !== "rescue-vote" ? "route-two"
     : state.vote?.status === "open" ? "rescue" : "waiting";
   const vote = kind === "round-four" ? state.roundFour?.phase === "npc-voting" ? state.roundFour.npc.vote : state.roundFour?.vote : kind === "transport" ? transport?.vote : kind === "route-three" ? state.roundThree?.vote

@@ -5,50 +5,69 @@ import { RoomManager } from "./manager.js";
 export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEvents>, manager = new RoomManager()): () => void {
   const channel = (code: string) => `room:${code}`;
   const publish = (room: PublicRoom) => { io.to(channel(room.code)).emit("room:updated", room); };
+  const emitGame = <K extends keyof ServerToClientEvents>(code: string, event: K, payload: Parameters<ServerToClientEvents[K]>[0]) => {
+    for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
+      const client = io.sockets.sockets.get(member);
+      if (client) (client.emit as (...args: unknown[]) => void)(event, manager.sessionProjection(member, payload));
+    }
+  };
+  manager.onFinished = code => {
+    const result = manager.finalResult(code);
+    if (!result) return;
+    emitGame(code, "game:finished", result);
+    for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
+      const objective = manager.objectiveSession(member);
+      if (objective) io.sockets.sockets.get(member)?.emit("game:objective", objective);
+    }
+  };
   manager.onSuppliesChanged = (code) => {
     for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
       if (!manager.privateRole(member)) io.sockets.sockets.get(member)?.emit("game:role-unavailable");
     }
     const transport = manager.transportView(code);
-    if (transport) io.to(channel(code)).emit("transport:updated", transport);
+    if (transport) emitGame(code, "transport:updated", transport);
     const supplies = manager.suppliesView(code);
-    if (supplies) io.to(channel(code)).emit("supplies:updated", supplies);
+    if (supplies) emitGame(code, "supplies:updated", supplies);
     const activity = manager.activityView(code);
-    if (activity) io.to(channel(code)).emit("game:activity", activity);
+    if (activity) emitGame(code, "game:activity", activity);
     const medical = manager.medicalView(code);
-    if (medical) io.to(channel(code)).emit("medical:updated", medical);
+    if (medical) emitGame(code, "medical:updated", medical);
     const roundTwo = manager.roundTwoView(code);
-    if (roundTwo) io.to(channel(code)).emit("round-two:updated", roundTwo);
+    if (roundTwo) emitGame(code, "round-two:updated", roundTwo);
     const roundFour = manager.roundFourView(code);
-    if (roundFour) io.to(channel(code)).emit("round-four:updated", roundFour);
+    if (roundFour) emitGame(code, "round-four:updated", roundFour);
     const roundThree = manager.roundThreeView(code);
-    if (roundThree) io.to(channel(code)).emit("round-three:updated", roundThree);
+    if (roundThree) emitGame(code, "round-three:updated", roundThree);
   };
   manager.onVotingChanged = (code) => {
     manager.onSuppliesChanged(code);
     const vote = manager.publicVote(code);
-    if (vote) io.to(channel(code)).emit("vote:updated", vote);
+    if (vote) emitGame(code, "vote:updated", vote);
     const summary = manager.roundSummary(code);
-    if (summary) io.to(channel(code)).emit("round:completed", summary);
+    if (summary) emitGame(code, "round:completed", summary);
   };
   const sendVoting = (socketId: string) => {
     const state = manager.votingSession(socketId);
+    const final = manager.finalSession(socketId);
+    if (final) io.sockets.sockets.get(socketId)?.emit("game:finished", manager.sessionProjection(socketId, final));
+    const objective = manager.objectiveSession(socketId);
+    if (objective) io.sockets.sockets.get(socketId)?.emit("game:objective", objective);
     const transport = manager.transportSession(socketId);
-    if (transport) io.sockets.sockets.get(socketId)?.emit("transport:updated", transport);
+    if (transport) io.sockets.sockets.get(socketId)?.emit("transport:updated", manager.sessionProjection(socketId, transport));
     const supplies = manager.suppliesSession(socketId);
-    if (supplies) io.sockets.sockets.get(socketId)?.emit("supplies:updated", supplies);
+    if (supplies) io.sockets.sockets.get(socketId)?.emit("supplies:updated", manager.sessionProjection(socketId, supplies));
     const activity = manager.activitySession(socketId);
-    if (activity) io.sockets.sockets.get(socketId)?.emit("game:activity", activity);
+    if (activity) io.sockets.sockets.get(socketId)?.emit("game:activity", manager.sessionProjection(socketId, activity));
     const medical = manager.medicalSession(socketId);
-    if (medical) io.sockets.sockets.get(socketId)?.emit("medical:updated", medical);
+    if (medical) io.sockets.sockets.get(socketId)?.emit("medical:updated", manager.sessionProjection(socketId, medical));
     const roundTwo = manager.roundTwoSession(socketId);
-    if (roundTwo) io.sockets.sockets.get(socketId)?.emit("round-two:updated", roundTwo);
+    if (roundTwo) io.sockets.sockets.get(socketId)?.emit("round-two:updated", manager.sessionProjection(socketId, roundTwo));
     const roundFour = manager.roundFourSession(socketId);
-    if (roundFour) io.sockets.sockets.get(socketId)?.emit("round-four:updated", roundFour);
+    if (roundFour) io.sockets.sockets.get(socketId)?.emit("round-four:updated", manager.sessionProjection(socketId, roundFour));
     const roundThree = manager.roundThreeSession(socketId);
-    if (roundThree) io.sockets.sockets.get(socketId)?.emit("round-three:updated", roundThree);
+    if (roundThree) io.sockets.sockets.get(socketId)?.emit("round-three:updated", manager.sessionProjection(socketId, roundThree));
     const summary = manager.summarySession(socketId);
-    if (summary) io.sockets.sockets.get(socketId)?.emit("round:completed", summary);
+    if (summary) io.sockets.sockets.get(socketId)?.emit("round:completed", manager.sessionProjection(socketId, summary));
     if (state) {
       io.sockets.sockets.get(socketId)?.emit("vote:updated", state.public);
       io.sockets.sockets.get(socketId)?.emit("vote:own", state.own);

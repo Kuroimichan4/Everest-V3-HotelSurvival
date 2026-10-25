@@ -41,7 +41,7 @@ export function VotePanel({ title, vote, own, options, enabled, busy, onVote }: 
     <div className="option-grid">{options.map(option => <article className={`option-card ${option.disabled ? "unavailable" : ""} ${ownOption === option.id ? "selected" : ""}`} key={option.id}>
       <h4>{option.label}</h4>{option.detail && <div className="option-detail">{option.detail}</div>}
       {option.reason && <p className="muted">{option.reason}</p>}
-      <button disabled={!enabled || busy || !!ownOption || !!option.disabled || remaining === 0 || vote.status !== "open"} onClick={() => onVote(option.id)}>{ownOption === option.id ? "Voto registrado" : `Votar ${option.label}`}</button>
+      <button disabled={!enabled || busy || !!option.disabled || remaining === 0 || vote.status !== "open"} onClick={() => onVote(option.id)}>{ownOption === option.id ? "Voto registrado" : `Votar ${option.label}`}</button>
     </article>)}</div>
     {ownOption && <p className="confirmation" role="status">Tu voto: {options.find(o => o.id === ownOption)?.label ?? "registrado"}. Esperando al equipo.</p>}
     {!enabled && <p className="muted">Puedes seguir la decisión; tu personaje no puede votar ahora.</p>}
