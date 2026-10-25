@@ -7,7 +7,7 @@ import type { SimulationState } from '../simulation/state.js';
 type Client = Socket<ServerToClientEvents, ClientToServerEvents>;
 test('four real clients: lobby history, canonical role, order, room isolation, live vote and F5', async () => {
   let now = 1000; const tasks = new Set<() => void>();
-  const manager = new RoomManager(() => 0, { now: () => now, schedule: fn => { tasks.add(fn); return () => { tasks.delete(fn); }; } });
+  const manager = new RoomManager(() => 0, { now: () => now, schedule: fn => { tasks.add(fn); return () => { tasks.delete(fn); }; } }, undefined, undefined, undefined, { mode: 'silent-chat-test', respond: () => ({ action: 'none' }) });
   const app = buildApp({ roomManager: manager }); const sockets: Client[] = [];
   try {
     await app.listen({ host: '127.0.0.1', port: 0 }); const address = app.server.address(); if (!address || typeof address === 'string') throw new Error('port');

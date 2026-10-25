@@ -1,8 +1,11 @@
 import { buildApp } from "./app.js";
 import { readServerConfig } from "./config.js";
+import { RoomManager } from './rooms/manager.js';
+import { createSurvivorAdapter } from './rooms/survivor-gemini.js';
 
 const config = readServerConfig();
-const app = buildApp({ logger: true, webOrigin: config.webOrigin });
+const roomManager = new RoomManager(undefined, undefined, undefined, undefined, undefined, () => createSurvivorAdapter(config.survivor));
+const app = buildApp({ logger: true, webOrigin: config.webOrigin, roomManager });
 let stopping = false;
 
 async function stop() {

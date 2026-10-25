@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
+import { ChatScroll } from './chat-scroll';
 import type { ChatInput, ChatReply, ChatView } from '@everest/shared';
 import { finalRoles } from './FinalResults';
 
@@ -11,17 +12,17 @@ export function TeamChat({ view, participantId, connected, onSend }: {
 }) {
   const [open, setOpen] = useState(false); const [unread, setUnread] = useState(0);
   const [draft, setDraft] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
-  const lock = useRef(false); const last = useRef<number | null>(null); const history = useRef<HTMLDivElement>(null);
+  const lock = useRef(false); const scroll = useRef(new ChatScroll()); const history = useRef<HTMLDivElement>(null);
   const retry = useRef<ChatInput | null>(null);
-  useEffect(() => {
-    if (!view) return;
-    const visible = history.current?.offsetParent !== null;
-    if (last.current !== null && !visible) setUnread(n => n + view.messages.filter(m => m.sequence > last.current! && m.sender.kind === 'human' && m.sender.participantId !== participantId).length);
-    if (visible) setUnread(0);
-    const initial = last.current === null;
-    last.current = view.sequence;
-    const box = history.current;
-    if (box && (initial || box.scrollHeight - box.scrollTop - box.clientHeight < 100)) box.scrollTop = box.scrollHeight;
+  useLayoutEffect(() => {
+    const update = () => {
+      const box = history.current; if (!view || !box) return;
+      const result = scroll.current.update(view, box.offsetParent !== null, participantId);
+      if (result.scroll) box.scrollTop = box.scrollHeight;
+      setUnread(result.unread);
+    };
+    update(); window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
   }, [view, open, participantId]);
   async function send() {
     if (lock.current || !view?.canWrite || !connected || !draft.trim()) return;
@@ -39,13 +40,16 @@ export function TeamChat({ view, participantId, connected, onSend }: {
       onClick={() => { setOpen(v => !v); setUnread(0); }}>{open ? 'Cerrar chat' : `Abrir chat${unread ? ` (${unread} nuevos)` : ''}`}</button></div>
     <div className="chat-content" id="team-chat-content">
       <a className="chat-vote-link" href="#current-action">Ir a la decisión actual</a>
-      <div className="chat-history" ref={history} role="log" aria-label="Mensajes del equipo" aria-live="polite" aria-relevant="additions">
+      <div className="chat-history" ref={history} onScroll={e => setUnread(scroll.current.scrolled(e.currentTarget))} role="log" aria-label="Mensajes del equipo" aria-live="polite" aria-relevant="additions">
         {!view?.messages.length && <p className="muted">Todavía no hay mensajes.</p>}
-        {view?.messages.map(message => <article key={message.id} className={`chat-message ${message.sender.kind === 'human' && message.sender.participantId === participantId ? 'is-own' : ''}`}>
-          <p className="chat-sender"><strong>{message.sender.name}</strong>{message.sender.kind === 'human' && message.sender.role ? ` · ${finalRoles[message.sender.role]}` : ''}</p>
+        {view?.messages.map(message => <article key={message.id} className={`chat-message ${message.sender.kind === 'server' ? 'is-npc' : message.sender.participantId === participantId ? 'is-own' : ''}`}>
+          <p className="chat-sender"><strong>{message.sender.name}</strong>{message.sender.kind === 'server' ? ' · NPC' : message.sender.role ? ` · ${finalRoles[message.sender.role]}` : ' · Participante'}</p>
           <p className="chat-text">{message.text}</p>
         </article>)}
       </div>
+      {unread > 0 && <button type="button" className="secondary chat-new-messages" onClick={() => {
+        scroll.current.latest(); if (history.current) history.current.scrollTop = history.current.scrollHeight; setUnread(0);
+      }}>{unread} mensajes nuevos · Ir al final</button>}
       <form onSubmit={e => { e.preventDefault(); void send(); }}>
         <label>Mensaje al equipo<textarea value={draft} maxLength={400} rows={3} disabled={!connected || !view?.canWrite || busy}
           onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }} /></label>

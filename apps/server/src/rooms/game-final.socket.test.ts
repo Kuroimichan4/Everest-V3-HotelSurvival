@@ -81,6 +81,13 @@ test.each([[0, null], [0.6, "assist"], [0.9, "carry"]] as const)("deterministic 
         expect(p.health).toBe(i === j || clients[i] === medic ? final.humans[j]!.health : undefined);
       });
       expect(objectives[i]![0]!.participantId).toBe(sessions[i]!.credential.participantId);
+      expect(results[i]![0]!.narrative).toEqual(final.narrative);
+      expect(results[i]![0]!.personalEpilogue).toMatchObject({ participantId: sessions[i]!.credential.participantId });
+      expect(objectives[i]![0]!.narrative).toBeTruthy();
+      for (let j = 0; j < 4; j++) if (j !== i) {
+        expect(JSON.stringify(results[i]![0])).not.toContain(objectives[j]![0]!.narrative!);
+        expect(JSON.stringify(objectives[i]![0])).not.toContain(objectives[j]![0]!.narrative!);
+      }
     }
     expect(internal.objectiveLedger!.patients).toHaveLength(1);
     expect(internal.objectiveLedger!.patients[0]!.treatments).toEqual([{ round: 3, restored: 20, requestId: treatment.requestId, administratorId: medicParticipantId }]);
@@ -93,6 +100,8 @@ test.each([[0, null], [0.6, "assist"], [0.9, "carry"]] as const)("deterministic 
     expect(objectives[1]![0]!.evaluation).toBe(roll === 0 ? "fulfilled" : "unfulfilled");
     for (const i of [0, 1, 3]) expect(JSON.stringify(objectives[i])).not.toMatch(/sabot|poison|venen|victimId|actorId/i);
     const storedLedger = JSON.stringify(internal.objectiveLedger);
+    expect(final.personalEpilogue).toBeUndefined();
+    expect(JSON.stringify(final.narrative)).not.toMatch(/sabot|venen|poison|plan secreto|cometido oculto/i);
     expect(JSON.stringify(final)).not.toMatch(/objective|knowledge|sheet|accidentProbability|score|ranking/);
     expect(otherFinal).not.toHaveBeenCalled();
     const calls = random.mock.calls.length; const resources = manager.suppliesView(code)!;

@@ -62,7 +62,7 @@ try{
  await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',modifiers:8,text:'\r'});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',modifiers:8,text:'\r'});
  await cdp('Input.insertText',{text:'Segunda línea'});assert.ok((await evaluate("document.querySelector('.chat-panel textarea').value")).includes('\n'));
  await cdp('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter'});await cdp('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter'});
- await wait("document.querySelectorAll('.chat-message').length===1");assert.equal(await evaluate('window.chatInjected===true'),false);
+ await wait("document.querySelectorAll('.chat-message:not(.is-npc)').length===1");assert.equal(await evaluate('window.chatInjected===true'),false);
  assert.equal(manager.publicVote(code).deadline,voteDeadline);
 
  await evaluate("document.querySelector('.chat-toggle').click()");
@@ -73,8 +73,8 @@ try{
  await evaluate("document.querySelector('.chat-vote-link').click()");
  const button=await evaluate("[...document.querySelectorAll('#current-action button')].filter(b=>!b.disabled).length");assert.ok(button>0);
  await evaluate('window.__beforeChatReload=true');
- await cdp('Page.reload');await wait("window.__beforeChatReload!==true && document.querySelectorAll('.chat-message').length===2");
- assert.equal(await evaluate("document.querySelectorAll('.chat-message').length"),2);
+ await cdp('Page.reload');await wait("window.__beforeChatReload!==true && document.querySelectorAll('.chat-message:not(.is-npc)').length===2");
+ assert.equal(await evaluate("document.querySelectorAll('.chat-message:not(.is-npc)').length"),2);
  assert.equal(manager.publicVote(code).deadline,voteDeadline);
  const game=manager.rooms.get(code).game;
  game.state={...game.state,characters:game.state.characters.map((c,i)=>({...c,energy:i===3?0:100}))};

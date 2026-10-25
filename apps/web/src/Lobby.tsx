@@ -10,6 +10,8 @@ import type { ChatView, ChatInput, ChatReply } from '@everest/shared';
 
 const storageKey = "everest-room-session";
 const errors: Record<RoomError, string> = {
+  'game-not-finished': 'La partida debe haber terminado para volver al lobby.',
+  'wrong-game': 'La solicitud pertenece a otra partida o a un resultado anterior.',
   "invalid-input": "Introduce un nombre de 1 a 40 caracteres y un código de sala válido.",
   "room-not-found": "La sala no existe.", "room-full": "La sala ya tiene cuatro participantes.",
   "already-started": "La partida ya ha comenzado.", "not-creator": "Solo el creador puede iniciar la partida.",
@@ -32,6 +34,7 @@ function readCredential(): SessionCredential | null {
 }
 
 export function Lobby() {
+  const resetGeneration = useRef(0);
   const [chat, setChat] = useState<ChatView | null>(null);
   const socketRef = useRef<GameSocket | null>(null);
   const credential = useRef<SessionCredential | null>(readCredential());
@@ -69,6 +72,7 @@ export function Lobby() {
       catch { setError("No se pudo guardar la sesión: una recarga podría impedir la reconexión."); }
     };
     const unbind = bindGameSocket(socket, dispatch, {
+      reset: () => { resetGeneration.current++; setError(''); setBusy(false); setVotingBusy(false); },
       chat: value => setChat(previous => !value || !previous || value.code !== previous.code || value.sequence >= previous.sequence ? value : previous),
       participantId: () => credential.current?.participantId,
       sabotage: setPrivateSabotage,
@@ -109,6 +113,19 @@ export function Lobby() {
     };
     if (kind === "create") socket.timeout(5000).emit("room:create", { name }, callback);
     else socket.timeout(5000).emit("room:join", { name, code }, callback);
+  }
+
+  function newGame() {
+    const socket = socketRef.current; const final = game.final;
+    if (!socket?.connected || !authenticated || busy || !final) return;
+    const generation = resetGeneration.current;
+    setBusy(true); setError('');
+    socket.timeout(5000).emit('room:restart', { gameId: final.gameId, resultId: final.id }, (err, reply) => {
+      if (generation !== resetGeneration.current) return;
+      setBusy(false);
+      if (err) { setError('No llegó la confirmación. Reconecta para recuperar el estado antes de reintentar.'); return; }
+      if (!reply.ok) setError(errors[reply.error]);
+    });
   }
 
   function start() {
@@ -249,10 +266,10 @@ export function Lobby() {
     if (!socket?.connected || !authenticated) { resolve(null); return; }
     socket.timeout(5000).emit('chat:send', input, (err, reply) => resolve(err ? null : reply));
   });
-  const chatPanel = room && authenticated ? <TeamChat view={chat} participantId={credential.current?.participantId ?? ''} connected={connected} onSend={sendChat} /> : null;
+  const chatPanel = room && authenticated ? <TeamChat key={game.supplies?.gameId ?? `lobby-${resetGeneration.current}`} view={chat} participantId={credential.current?.participantId ?? ''} connected={connected} onSend={sendChat} /> : null;
   const creator = room?.creatorId === credential.current?.participantId;
   if (room?.status === "started" && authenticated) return <div className="room-with-chat"><div className="room-content"><GameScreen state={game} participantId={credential.current?.participantId ?? ""}
-    privateSabotage={privateSabotage} personalDeath={personalDeath} connected={connected} busy={busy || votingBusy} error={error} actions={{ onVote: cast, onRoute: routeAction, onIntermediate: intermediateAction,
+    privateSabotage={privateSabotage} personalDeath={personalDeath} connected={connected} busy={busy || votingBusy} error={error} actions={{ onNewGame: newGame, onVote: cast, onRoute: routeAction, onIntermediate: intermediateAction,
       onOpenThree: () => roundThreeAction("open"), onOpenFour: () => roundFourAction("open"), onRetryFour: id => roundFourAction("retry", id),
       onAdvance: () => { if (scene.round === 5) roundFourAction("advance"); else if (scene.round === 4) intermediateAction(5, "advance"); else if (scene.round === 3) intermediateAction(4, "advance"); else if (scene.round === 2) roundThreeAction("advance"); else advance(); },
       onOpenTransport: openTransport, onRetry: retryRoute, onGive: givePack, onTreat: treat, onSabotage: sabotage }} /></div>{chatPanel}</div>;

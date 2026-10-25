@@ -447,7 +447,7 @@ test.each(["rescue", "abandon"])("cuatro sockets reciben mayoría inmediata de %
   await fixture(async ({ room, clock, connect, manager }) => {
     const first = await room();
     const second = await room();
-    expect(clock.tasks.size).toBe(2);
+    expect(clock.tasks.size).toBe(6); // Two votes plus two timed NPC arguments per room.
     expect(await cast(second.clients[0]!, first.vote)).toEqual({ ok: false, error: "wrong-decision" });
     const outsider = await connect();
     expect(await cast(outsider, first.vote)).toEqual({ ok: false, error: "invalid-session" });
@@ -515,7 +515,7 @@ test("reconexión recupera voto propio y plazo; votos mezclados vencen automáti
     expect((await replacement.timeout(2000).emitWithAck("room:resume", sessions[0]!.credential)).ok).toBe(true);
     expect(await resumed).toMatchObject({ decisionId: vote.decisionId, attemptId: vote.attemptId, deadline: vote.deadline, requiredVotes: 3, status: "open" });
     expect((await own).optionId).toBe("rescue");
-    expect(clock.tasks.size).toBe(1);
+    expect(clock.tasks.size).toBe(3); // Vote deadline plus NPC arguments at 20/40 seconds.
     const second = clients.map((client) => nextVote(client, (state) => state.attemptNumber === 2));
     clock.advance(50_000);
     const states = await Promise.all(second);
@@ -551,7 +551,7 @@ test("rechaza un voto fuera de plazo aunque el planificador aún no haya ejecuta
     const { clients, vote } = await room();
     clock.time = vote.deadline;
     expect(await cast(clients[0]!, vote)).toEqual({ ok: false, error: "expired" });
-    expect(clock.tasks.size).toBe(1);
+    expect(clock.tasks.size).toBe(2); // Retry deadline and the argument at 15 seconds.
   });
 });
 

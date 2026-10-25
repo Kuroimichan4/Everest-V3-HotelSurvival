@@ -4,21 +4,27 @@ export const finalHumanStatus = { evacuated: "Evacuado", dead: "Fallecido", aban
 const npcStatus = { "not-encountered": "Encuentro no alcanzado", absent: "No apareció", pending: "Decisión pendiente",
   approved: "Ayuda aprobada, rescate no completado", rescued: "Rescate completado", abandoned: "Abandonado", dead: "Fallecido" };
 
-export function FinalResults({ result, objective, participantId, connected }: {
+export function FinalResults({ result, objective, participantId, connected, onNewGame, restartDisabled = false }: {
   result: GameFinalResult; objective: PrivateObjectiveEvidence | null; participantId: string; connected: boolean;
+  onNewGame?: () => void; restartDisabled?: boolean;
 }) {
   const own = objective?.participantId === participantId && objective.resultId === result.id ? objective : null;
+  const epilogue = result.personalEpilogue?.participantId === participantId ? result.personalEpilogue.text : null;
   const names = (ids: string[]) => ids.map(id => result.humans.find(p => p.participantId === id)?.name ?? "Compañero").join(", ");
   return <div className="main-column" data-game-screen="final">
     <header className="game-header"><div className="brand"><div><p className="eyebrow">HOTEL SURVIVAL</p><h1>Fin de la simulación</h1></div></div>
       <span className={`connection-badge ${connected ? "online" : "offline"}`}>{connected ? "Conectado" : "Sin conexión"}</span></header>
     <section className="panel" aria-label="Desenlace"><p className="eyebrow">RESULTADO DESCRIPTIVO</p>
-      <h2>{result.kind === "evacuation-completed" ? "Desplazamiento de evacuación completado" : "No quedan humanos activos para continuar"}</h2>
+      {result.narrative && <h2 className="final-dramatic-title">{result.narrative.title}</h2>}
+      <p className="final-outcome">{result.kind === "evacuation-completed" ? "Desplazamiento de evacuación completado" : "No quedan humanos activos para continuar"}</p>
       <p>Sin puntuaciones ni clasificación. Los objetivos individuales se evalúan según los hechos registrados.</p>
       <div className="shared-inventory"><div><strong>{result.counts.evacuated}</strong><span>Humanos evacuados</span></div>
         <div><strong>{result.counts.dead}</strong><span>Fallecidos</span></div><div><strong>{result.counts.abandoned}</strong><span>Abandonados</span></div>
         <div><strong>{result.counts.rescuedNpcs}</strong><span>NPC con rescate completado</span></div></div>
     </section>
+    {result.narrative && <section className="panel final-narrative" aria-label="Valoración colectiva"><h2>Lo que dejó el hotel</h2>
+      {result.narrative.paragraphs.map((text, i) => <p key={i}>{text}</p>)}
+    </section>}
     <section className="panel team-panel" data-panel="team" aria-label="Estado final del equipo"><h2>Resumen del equipo</h2>
       <div className="team-grid">{result.humans.map(p => <article className={`player-card ${p.participantId === participantId ? "is-self" : ""}`} key={p.participantId} data-player={p.participantId}>
         <h3>{p.name}</h3><p>{finalRoles[p.role]}</p><p className="status-label">{finalHumanStatus[p.status]}</p>
@@ -38,8 +44,15 @@ export function FinalResults({ result, objective, participantId, connected }: {
     </section>
     <section className="panel" aria-label="Mi objetivo individual"><h2>Tu objetivo individual</h2>
       {own ? <><p>{own.objective}</p><p>{own.evaluation === "fulfilled" ? "Objetivo cumplido con información suficiente." : own.evaluation === "unfulfilled" ? "Objetivo incumplido con información suficiente." : "Pendiente de evaluación."} {own.evidenceState === "confirmed" ? "Hay hechos confirmados para revisar." : "La evaluación utiliza únicamente los datos registrados."}</p>
+        {own.narrative && <p className="objective-narrative" data-evaluation={own.evaluation}>{own.narrative}</p>}
         <ul>{own.facts.map((f, i) => <li key={i}>{f}</li>)}</ul><ul>{own.missing.map((f, i) => <li key={i}>{f}</li>)}</ul></>
         : <p>La información individual se muestra únicamente a su sesión autorizada. Se mantienen las restricciones de personajes fallecidos o abandonados.</p>}
     </section>
+    {epilogue && <section className="panel final-epilogue" aria-label="El destino de tu personaje"><h2>Tu último umbral</h2><p>{epilogue}</p></section>}
+    {onNewGame && <section className="panel" aria-label="Volver a jugar"><h2>Volver a jugar</h2>
+      <p>Cuando hayáis revisado el desenlace, podéis volver juntos al lobby. Se borrarán el estado de esta partida y su chat.</p>
+      <button disabled={!connected || restartDisabled} onClick={onNewGame}>Nueva partida</button>
+      {restartDisabled && <p className="muted">Deben estar conectados los cuatro participantes. Esperad a que termine cualquier solicitud en curso.</p>}
+    </section>}
   </div>;
 }

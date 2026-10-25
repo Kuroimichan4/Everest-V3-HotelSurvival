@@ -5,8 +5,7 @@ coverage/
 .tools/
 *.tsbuildinfo
 *.log
-.env
-.env.*
+.env*
 !.env.example
 apps/server/src/generated/
 .DS_Store

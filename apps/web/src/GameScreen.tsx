@@ -20,6 +20,7 @@ import { RoundFour } from "./RoundFour";
 import { FinalResults } from "./FinalResults";
 
 export interface GameActions {
+  onNewGame?: () => void;
   onSabotage?: (input: MedicalSabotageInput, done: (reply: MedicalSabotageReply | null) => void) => void;
   onIntermediate?: (round: 4 | 5, action: "advance" | "reveal" | "open" | "retry") => void;
   onOpenFour?: () => void; onRetryFour?: (id: string) => void;
@@ -148,7 +149,7 @@ export function GameScreen({ state, participantId, connected, busy, actions, err
   const scene = activeScene(state);
   const self = state.supplies?.characters.find(c => c.participantId === participantId);
   const enabled = connected && state.role?.participantId === participantId && !!self && activeHuman(self) && !self.eliminated;
-  if (state.final) return <><PersonalDeathNotice state={state} participantId={participantId} message={personalDeath} /><FinalResults result={state.final} objective={state.objective} participantId={participantId} connected={connected} /><BellhopSabotage state={state.final.humans.some(p => p.participantId === participantId && p.role === "bellhop") ? privateSabotage : null} participantId={participantId} gameId={state.final.gameId} authorized={false} connected={connected} readOnly /><GameHistory state={state} /></>;
+  if (state.final) return <><PersonalDeathNotice state={state} participantId={participantId} message={personalDeath} />{error && <p role="alert">{error}</p>}<FinalResults result={state.final} objective={state.objective} participantId={participantId} connected={connected} {...(state.room?.creatorId === participantId && actions.onNewGame ? { onNewGame: actions.onNewGame } : {})} restartDisabled={busy || state.room?.participants.length !== 4 || state.room.participants.some(p => !p.connected)} /><BellhopSabotage state={state.final.humans.some(p => p.participantId === participantId && p.role === "bellhop") ? privateSabotage : null} participantId={participantId} gameId={state.final.gameId} authorized={false} connected={connected} readOnly /><GameHistory state={state} /></>;
   return <VoteClockProvider vote={scene.vote}>
     <GameHeader state={state} connected={connected} />
     <VoteStatus vote={scene.vote} label={scene.phase} />

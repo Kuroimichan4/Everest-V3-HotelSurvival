@@ -185,3 +185,15 @@ th, td { padding: .65rem; text-align: left; border-bottom: 1px solid var(--borde
   .chat-panel.is-open .chat-content { display: block; }
   .chat-history { height: 180px; }
 }
+
+.chat-message.is-npc { background: #343224; border-left: 3px solid #e4bd66; }
+.chat-message.is-npc .chat-sender { color: #f5d999; }
+
+.final-dramatic-title { color: #f1d7a0; font-family: Georgia, serif; font-size: clamp(1.6rem, 4vw, 2.4rem); }
+.final-outcome { font-weight: 650; }
+.final-narrative { border-left: 3px solid #c5a466; background: linear-gradient(135deg, #27332f, #12252f); }
+.final-narrative p, .final-epilogue p { max-width: 76ch; line-height: 1.7; }
+.objective-narrative { border-left: 3px solid #aa9774; background: #1c3037; padding: 1rem; line-height: 1.6; }
+.objective-narrative[data-evaluation="fulfilled"] { border-color: var(--accent); }
+.objective-narrative[data-evaluation="unfulfilled"] { border-color: #d79c89; }
+.final-epilogue { border-top: 2px solid #9a8768; }

@@ -34,7 +34,7 @@ test('400 characters are accepted without truncation', () => {
   expect(c.messages[0]!.text).toHaveLength(400);
 });
 test.each([1, 2, 3, 4, 5, 6] as const)('chat is independent of round %i and cannot change simulation state', round => {
-  const m = new RoomManager(() => 0); try {
+  const m = new RoomManager(() => 0, undefined, undefined, undefined, undefined, { mode: 'silent-chat-test', respond: () => ({ action: 'none' }) }); try {
     const r = m.create('s0', 'Host'); if (!r.ok) throw new Error(r.error);
     for (let i = 1; i < 4; i++) m.join('s' + i, 'Person ' + i, r.value.room.code); m.start('s0');
     const game = (m as unknown as { rooms: Map<string, { game: { state: SimulationState } }> }).rooms.get(r.value.room.code)!.game;
@@ -44,7 +44,7 @@ test.each([1, 2, 3, 4, 5, 6] as const)('chat is independent of round %i and cann
   } finally { m.dispose(); }
 });
 test('manager authenticates lobby and active sessions; death, abandonment and finalization are read-only', () => {
-  const m = new RoomManager(() => 0); try {
+  const m = new RoomManager(() => 0, undefined, undefined, undefined, undefined, { mode: 'silent-chat-test', respond: () => ({ action: 'none' }) }); try {
     expect(m.sendChat('outsider', { requestId: 1, text: 'no' })).toMatchObject({ ok: false, error: 'invalid-session' });
     const created = m.create('s0', 'Host'); if (!created.ok) throw new Error(created.error);
     const code = created.value.room.code; for (let i = 1; i < 4; i++) m.join('s' + i, 'Person ' + i, code);

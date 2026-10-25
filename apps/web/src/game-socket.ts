@@ -6,6 +6,7 @@ export type GameSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 /** La conexión pertenece al Lobby. Cada alta tiene una baja exacta, también bajo StrictMode. */
 export function bindGameSocket(socket: GameSocket, dispatch: (event: GameUpdate) => void, lifecycle: {
   chat?: (value: import('@everest/shared').ChatView | null) => void;
+  reset?: () => void;
   personalDeath?: (value: PersonalDeathMessage | null) => void;
   sabotage?: (value: PrivateMedicalSabotage | null) => void;
   connect: () => void; disconnect: () => void; error: () => void; participantId: () => string | undefined;
@@ -15,6 +16,11 @@ export function bindGameSocket(socket: GameSocket, dispatch: (event: GameUpdate)
   socket.on('chat:updated', chat);
   const push = (event: GameUpdate) => { if (active) dispatch(event); };
   const room: ServerToClientEvents["room:updated"] = value => push({ type: "room", value });
+  const reset: ServerToClientEvents['room:reset'] = value => {
+    if (!active) return;
+    push({ type: 'reset', value }); lifecycle.chat?.(null); lifecycle.sabotage?.(null); lifecycle.personalDeath?.(null); lifecycle.reset?.();
+  };
+  socket.on('room:reset', reset);
   const role: ServerToClientEvents["game:role"] = value => { if (value.participantId === lifecycle.participantId()) push({ type: "role", value }); };
   const revoke = () => push({ type: "role", value: null });
   const vote: ServerToClientEvents["vote:updated"] = value => push({ type: "vote", value });
@@ -49,6 +55,7 @@ export function bindGameSocket(socket: GameSocket, dispatch: (event: GameUpdate)
   socket.on("game:finished", final); socket.on("game:objective", objective);
   return () => {
     active = false;
+    socket.off('room:reset', reset);
     socket.off('chat:updated', chat);
     socket.off("connect", connect); socket.off("disconnect", disconnect); socket.off("connect_error", error);
     socket.off("room:updated", room); socket.off("game:role", role); socket.off("game:role-unavailable", revoke);

@@ -6,6 +6,11 @@ export class RoomChat {
   readonly messages: ChatMessage[] = [];
   private readonly requests = new Map<string, { last: number; at: number }>();
   sequence = 0;
+  serverMessage(text: string, now: number, npcId: string, round: number) {
+    this.messages.push({ id: newId(), sequence: ++this.sequence, requestId: 0, sentAt: now, text,
+      sender: { kind: 'server', name: `Superviviente de ronda ${round}`, npcId } });
+    if (this.messages.length > 150) this.messages.shift();
+  }
   nextRequest(id: string) { return (this.requests.get(id)?.last ?? 0) + 1; }
   send(input: unknown, sender: Extract<ChatMessage['sender'], { kind: 'human' }>, now: number, writable: boolean): ChatReply {
     if (!input || typeof input !== 'object' || Object.keys(input).sort().join(',') !== 'requestId,text') return { ok: false, error: 'invalid-input' };

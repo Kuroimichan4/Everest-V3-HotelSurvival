@@ -5,6 +5,7 @@ import { RoomManager } from "./manager.js";
 export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEvents>, manager = new RoomManager()): () => void {
   const channel = (code: string) => `room:${code}`;
   const sendChat = (id: string) => { const view = manager.chatSession(id); if (view) io.sockets.sockets.get(id)?.emit('chat:updated', view); };
+  manager.onChatChanged = code => { for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) sendChat(member); };
   const publish = (room: PublicRoom) => { io.to(channel(room.code)).emit("room:updated", room); };
   manager.onRoomChanged = publish;
   const emitGame = <K extends keyof ServerToClientEvents>(code: string, event: K, payload: Parameters<ServerToClientEvents[K]>[0]) => {
@@ -14,6 +15,12 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
     }
   };
   const deliveredDeaths = new Map<string,string>();
+  manager.onRoomReset = room => {
+    for (const member of io.sockets.adapter.rooms.get(channel(room.code)) ?? []) deliveredDeaths.delete(member);
+    io.to(channel(room.code)).emit('room:reset', room);
+    publish(room);
+    manager.onChatChanged(room.code);
+  };
   const sendPersonalDeath = (socketId:string) => {
     const message=manager.personalDeathSession(socketId);
     if(!message||deliveredDeaths.get(socketId)===message.eventId)return;
@@ -104,6 +111,7 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
   };
 
   io.on("connection", (socket) => {
+    socket.on('room:restart', (input, ack) => { if (typeof ack === 'function') ack(manager.restart(socket.id, input)); });
     socket.on('chat:send', (input, ack) => {
       if (typeof ack !== 'function') return;
       const result = manager.sendChat(socket.id, input); ack(result);
@@ -143,6 +151,9 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
         await socket.join(channel(result.value.room.code));
         // Si se desconectó mientras entraba en el canal, no dejar una plaza conectada fantasma.
         if (!socket.connected) return;
+        // The room may have reset while the asynchronous channel join was pending.
+        result = manager.resume(socket.id, result.value.credential);
+        if (!result.ok) { ack(result); return; }
         ack(result);
         publish(result.value.room);
         const role = manager.privateRole(socket.id);

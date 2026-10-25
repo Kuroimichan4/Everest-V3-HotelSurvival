@@ -10,7 +10,7 @@ export interface GameState {
   supplies: SuppliesView | null; medical: MedicalView | null; transport: TransportView | null; activity: GameActivityView | null;
 }
 export const emptyGame: GameState = { intermediates: [], final: null, objective: null, room: null, role: null, vote: null, ownVote: null, roundFour: null, summary: null, roundTwo: null, roundThree: null, supplies: null, medical: null, transport: null, activity: null };
-export type GameUpdate = { [K in keyof GameState]: { type: K; value: GameState[K] } }[keyof GameState] | { type: "disconnect" } | { type: "clear" };
+export type GameUpdate = { [K in keyof GameState]: { type: K; value: GameState[K] } }[keyof GameState] | { type: "disconnect" } | { type: "clear" } | { type: 'reset'; value: PublicRoom };
 
 export function activeHuman(c: { health?: number; status?: string; eliminated?: boolean }) {
   return !c.eliminated && c.status !== "dead" && c.status !== "abandoned" && c.health !== 0;
@@ -19,6 +19,7 @@ export function activeHuman(c: { health?: number; status?: string; eliminated?: 
 /** Cada evento sustituye su instantánea. Nunca acumular paneles ni resultados recibidos. */
 export function gameReducer(state: GameState, action: GameUpdate): GameState {
   if (action.type === "clear") return emptyGame;
+  if (action.type === 'reset') return { ...emptyGame, room: action.value };
   if (action.type === "disconnect") return { ...emptyGame, room: state.room };
   if (JSON.stringify(state[action.type]) === JSON.stringify(action.value)) return state;
   return { ...state, [action.type]: action.value };

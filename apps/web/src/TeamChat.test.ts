@@ -15,6 +15,11 @@ test('chat renders literal hostile text, canonical public labels, own styles and
   expect(html.match(/chat-message is-own/g)).toHaveLength(1); expect(html.indexOf('Hola')).toBeLessThan(html.indexOf('Segundo'));
   expect(html).toContain('maxLength="400"'); expect(html).toContain('Shift+Enter'); expect(html).toContain('aria-expanded="false"');
 });
+test('NPC messages have a distinct style without acquiring human identity', () => {
+  const npc = { ...view, messages: [{ ...view.messages[0]!, text: 'Coordinad la evacuación.', sender: { kind: 'server' as const, name: 'Superviviente de ronda 1' } }] };
+  const html = renderToStaticMarkup(createElement(TeamChat, { view: npc, participantId: 'p', connected: true, onSend: async () => null }));
+  expect(html).toContain('chat-message is-npc'); expect(html).toContain('Superviviente de ronda 1'); expect(html).not.toContain('is-own');
+});
 test.each([false, true])('read-only or disconnected history remains consultable; disconnected=%s', disconnected => {
   const html = renderToStaticMarkup(createElement(TeamChat, { view: { ...view, canWrite: false }, participantId: 'p', connected: !disconnected, onSend: async () => null }));
   expect(html).toContain('Segundo'); expect(html).toContain('<textarea maxLength="400" rows="3" disabled=""'); expect(html).toContain('<button disabled=""');

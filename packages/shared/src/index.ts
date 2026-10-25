@@ -33,6 +33,7 @@ export interface MedicalSabotageInput { requestId:string; gameId:string }
 export interface PrivateMedicalSabotage { participantId:string; gameId:string; performed:boolean; objectiveFulfilled:boolean; canManipulate:boolean; reason:string|null }
 export type MedicalSabotageReply = {ok:true;requestId:string;state:PrivateMedicalSabotage}|{ok:false;error:string};
 export interface ClientToServerEvents {
+  'room:restart': (input: { gameId: string; resultId: string }, ack: (reply: RoomReply<PublicRoom>) => void) => void;
   'chat:send': (input: ChatInput, ack: (reply: ChatReply) => void) => void;
   "medical:sabotage": (input:MedicalSabotageInput,ack:(reply:MedicalSabotageReply)=>void)=>void;
   "intermediate:action": (input: { round: 4 | 5; action: "advance" | "reveal" | "open" | "retry" }, ack: (reply: RouteActionReply) => void) => void;
@@ -61,6 +62,7 @@ export interface ClientToServerEvents {
 
 export interface PersonalDeathMessage { gameId:string; participantId:string; eventId:string; round:1|2|3|4|5|6; kind:"accident"|"gas"|"explosion"|"unexpected"; message:string }
 export interface ServerToClientEvents {
+  'room:reset': (room: PublicRoom) => void;
   'chat:updated': (view: ChatView) => void;
   "game:personal-death": (message:PersonalDeathMessage)=>void;
   "medical:sabotage-private": (state:PrivateMedicalSabotage)=>void;
@@ -96,6 +98,9 @@ export interface FinalNpc {
   evacuated: boolean | null;
 }
 export interface GameFinalResult {
+  narrative?: { title: string; paragraphs: string[] };
+  /** Added only by the authenticated recipient's server projection. */
+  personalEpilogue?: { participantId: string; text: string };
   id: string; gameId: string; closedAt: number; round: 1 | 2 | 3 | 4 | 5 | 6;
   kind: "evacuation-completed" | "no-active-humans";
   humans: FinalHuman[]; npcs: FinalNpc[];
@@ -106,6 +111,7 @@ export interface GameFinalResult {
 }
 /** Exclusivo del destinatario autorizado; nunca incluir en el resultado público. */
 export interface PrivateObjectiveEvidence {
+  narrative?: string;
   resultId: string; participantId: string; objective: string;
   gameId?: string;
   evaluation: "fulfilled" | "unfulfilled" | "pending-evaluation";
@@ -184,6 +190,7 @@ export interface CharacterSheet {
 }
 
 export type RoomError = "invalid-input" | "room-not-found" | "room-full" | "already-started"
+  | 'game-not-finished' | 'wrong-game'
   | "not-creator" | "not-four-connected" | "invalid-credentials" | "session-in-use"
   | "already-in-room";
 
@@ -343,7 +350,7 @@ export interface ChatInput { requestId: number; text: string }
 export interface ChatMessage {
   id: string; sequence: number; requestId: number; sentAt: number; text: string;
   sender: { kind: 'human'; participantId: string; name: string; role?: AssignedRole }
-    | { kind: 'server'; name: string };
+    | { kind: 'server'; name: string; npcId?: string };
 }
 export interface ChatView { code: string; sequence: number; messages: ChatMessage[]; canWrite: boolean; nextRequestId: number }
 export type ChatReply = { ok: true; messageId: string } | { ok: false; error: 'invalid-session' | 'invalid-input' | 'invalid-text' | 'read-only' | 'stale-request' | 'rate-limited' };

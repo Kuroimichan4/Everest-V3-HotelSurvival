@@ -4,6 +4,7 @@ import { internalRouteRisk, privateRouteViews } from "./routes.js";
 import { internalRoundThreeRisk } from "./round-three-routes.js";
 import { ROUND_FOUR_ROUTES, type RoundFourState } from "./round-four.js";
 import { characterSheet } from "../rooms/character-sheets.js";
+import { objectiveNarrative } from './final-narrative.js';
 
 export interface EvidenceContext {
   /** Recibos autenticados existentes, no identidades enviadas por el navegador. */
@@ -162,5 +163,6 @@ export function projectObjectiveEvidence(state: SimulationState, result: GameFin
     facts.push(confirmed ? "Una muerte humana causada por tu sabotaje está confirmada." : "No consta ninguna muerte humana causada por tu sabotaje.");
   }
   return { gameId: result.gameId, resultId: result.id, participantId: person.participantId, objective: characterSheet(human.role).objective,
-    evaluation, evidenceState: confirmed ? "confirmed" : "insufficient", facts, missing };
+    evaluation, evidenceState: confirmed ? "confirmed" : "insufficient", facts, missing,
+    narrative: objectiveNarrative(result.gameId ?? result.id, person.participantId, human.role, evaluation) };
 }

@@ -1,5 +1,7 @@
 import { personalDeathMessage } from "./personal-death.js";
+import { survivalNarrative } from '../simulation/final-narrative.js';
 import { RoomChat } from './chat.js';
+import { SurvivorAgent, demonstrationAdapter, type SurvivorAdapter, type SurvivorContext } from './survivor-agent.js';
 import type { ChatView, ChatReply } from '@everest/shared';
 import type { PersonalDeathMessage } from "@everest/shared";
 import { manipulateMedication } from "../simulation/medical-sabotage.js";
@@ -49,6 +51,7 @@ import type { PackInput, PackReply, SuppliesView } from "@everest/shared";
 import type { MedicalView, TreatmentInput, TreatmentReply } from "@everest/shared";
 
 interface Game {
+  survivorAgent?: SurvivorAgent;
   structuralReports?: Map<number, Set<string>>;
   personalDeaths?: Map<string,PersonalDeathMessage>;
   finalResult?: GameFinalResult;
@@ -77,6 +80,7 @@ interface Game {
   state: SimulationState;
 }
 interface Room {
+  lastRestart?: { gameId: string; resultId: string };
   chat?: RoomChat;
   code: string;
   creatorId: string;
@@ -117,8 +121,39 @@ export class RoomManager {
   onRoomChanged: (room: PublicRoom) => void = () => {};
   onSuppliesChanged: (code: string) => void = () => {};
   onFinished: (code: string) => void = () => {};
+  onChatChanged: (code: string) => void = () => {};
+  onRoomReset: (room: PublicRoom) => void = () => {};
   constructor(private readonly randomIndex?: RandomIndex, private readonly clock: VotingClock = systemClock,
-    private readonly routeRandom: RandomSource = Math.random, private readonly medicalRandom: RandomSource = Math.random, private readonly narrativeRandom: RandomSource = Math.random) {}
+    private readonly routeRandom: RandomSource = Math.random, private readonly medicalRandom: RandomSource = Math.random, private readonly narrativeRandom: RandomSource = Math.random,
+    private readonly survivorAdapter: SurvivorAdapter | (() => SurvivorAdapter) = demonstrationAdapter) {}
+
+  private survivorContext(room: Room): SurvivorContext | null {
+    const game = room.game;
+    if (!game || game.finalResult || game.resolvingMovement || !game.state.characters.some(isAlive)) return null;
+    const round = game.state.currentRound;
+    const voting = this.activeVoting(game);
+    if (!voting || voting.publicView().status !== 'open') return null;
+    let situation: SurvivorContext['situation'] = 'trapped';
+    if (round === 1) { if (voting !== game.voting || game.state.roundOnePreparation || game.state.roundOne) return null; }
+    else if (round === 2) { if (!game.roundTwoNpcStarted || voting !== game.voting || game.state.roundTwo?.resolution) return null; }
+    else if (round === 6) {
+      if (voting !== game.roundFour?.npcVoting || !('roundFour' in game.state)) return null;
+      const npc = (game.state as RoundFourState).roundFour.npc;
+      if (npc.status !== 'awaiting-decision' || npc.encounter === 'none') return null;
+      situation = npc.encounter;
+    } else return null;
+    const attempt = voting.snapshot().attempts.at(-1)!;
+    const view = voting.publicView();
+    if (view.attemptNumber > 2 || view.deadline <= this.clock.now()) return null;
+    return { encounterId: `${game.id}:npc:${round}`, round, situation,
+      vote: { decisionId: view.decisionId, attemptId: view.attemptId, attempt: view.attemptNumber as 1 | 2, openedAt: attempt.openedAt, deadline: view.deadline } };
+  }
+  private observeSurvivor(room: Room) {
+    const game = room.game; if (!game) return;
+    (game.survivorAgent ??= new SurvivorAgent(typeof this.survivorAdapter === 'function' ? this.survivorAdapter() : this.survivorAdapter, this.clock)).observe(() => this.survivorContext(room), (text, context) => {
+      (room.chat ??= new RoomChat()).serverMessage(text, this.clock.now(), context.encounterId, context.round); this.onChatChanged(room.code);
+    });
+  }
 
   private recordStructuralReports(game:Game) {
     const decisions:[number,RoomVoting|undefined][]=[[2,game.route?.voting],[3,game.roundThree?.voting],
@@ -144,8 +179,10 @@ export class RoomManager {
     if (!result) {
       // Resolve the complete movement before handing over authority; terminal games need no successor.
       this.reassignInactiveHost(room);
+      this.observeSurvivor(room);
       return;
     }
+    game.survivorAgent?.dispose();
     game.finalResult = result;
     const context: EvidenceContext = {
       treatments: [...game.treatmentRequests].map(([requestId, r]) => ({ requestId, round: r.round, patientId: r.targetParticipantId, administratorId: r.actorId })),
@@ -184,6 +221,11 @@ export class RoomManager {
     let outgoing = payload;
     const game = connection.room.game;
     if (game) this.recordStructuralReports(game);
+    if (game?.finalResult && payload && typeof payload === 'object' && 'id' in payload && payload.id === game.finalResult.id && 'humans' in payload) {
+      const person = game.finalResult.humans.find(p => p.participantId === connection.participant.id);
+      if (person) outgoing = { ...payload, personalEpilogue: { participantId: person.participantId,
+        text: survivalNarrative(game.id, person.participantId, person.status) } };
+    }
     if (game && payload && typeof payload === "object" && "windowId" in payload && "characters" in payload && "gameId" in payload) {
       const supplies = payload as unknown as SuppliesView;
       const transport = game.transports?.findLast(t => t.route.round === game.state.currentRound && t.phase !== "superseded")?.view();
@@ -212,7 +254,7 @@ export class RoomManager {
     return projectForParticipant(outgoing, connection.participant.id, !!actor && isAlive(actor) && actor.role === "medic", !!actor && isAlive(actor) && actor.role === "architect-engineer", !!actor && isAlive(actor) && actor.role === "bellhop", Object.fromEntries((game?.state.characters ?? []).map(c => [connection.room.participants.find(p => p.characterId === c.id)!.id, c.role])), new Set(game?.structuralReports?.keys() ?? []));
   }
 
-  dispose(): void { for (const room of this.rooms.values()) { room.game?.intermediates?.forEach(stage => stage.dispose()); room.game?.transports?.forEach(t => t.dispose()); room.game?.roundFour?.dispose(); room.game?.voting.dispose(); room.game?.route?.voting?.dispose(); room.game?.roundThree?.voting?.dispose(); } }
+  dispose(): void { for (const room of this.rooms.values()) { room.game?.survivorAgent?.dispose(); room.game?.intermediates?.forEach(stage => stage.dispose()); room.game?.transports?.forEach(t => t.dispose()); room.game?.roundFour?.dispose(); room.game?.voting.dispose(); room.game?.route?.voting?.dispose(); room.game?.roundThree?.voting?.dispose(); } }
   private activeVoting(game: Game): RoomVoting | null {
     if (game.finalResult || sectorWasEvacuated(game.state)) return null;
     const transport = game.transports?.findLast(t => t.route.round === game.state.currentRound && t.phase !== "superseded");
@@ -323,6 +365,30 @@ export class RoomManager {
     };
   }
 
+  restart(socketId: string, input: unknown): RoomReply<PublicRoom> {
+    const connection = this.connections.get(socketId);
+    if (!connection) return fail('invalid-credentials');
+    const { room, participant } = connection;
+    if (participant.id !== room.creatorId) return fail('not-creator');
+    if (!input || typeof input !== 'object' || Object.keys(input).sort().join(',') !== 'gameId,resultId') return fail('invalid-input');
+    const candidate = input as { gameId: string; resultId: string };
+    if (typeof candidate.gameId !== 'string' || typeof candidate.resultId !== 'string') return fail('invalid-input');
+    if (!room.game && room.lastRestart?.gameId === candidate.gameId && room.lastRestart.resultId === candidate.resultId) return { ok: true, value: this.publicRoom(room) };
+    const game = room.game;
+    if (!game || game.id !== candidate.gameId) return fail('wrong-game');
+    if (!game.finalResult) return fail('game-not-finished');
+    if (game.finalResult.id !== candidate.resultId) return fail('wrong-game');
+    if (room.participants.length !== 4 || room.participants.some(p => p.socketId === null)) return fail('not-four-connected');
+    // Dispose first: pending model replies must never observe the next game in this room.
+    game.survivorAgent?.dispose(); game.voting.dispose(); game.route?.voting?.dispose(); game.roundThree?.voting?.dispose();
+    game.intermediates?.forEach(stage => stage.dispose()); game.roundFour?.dispose(); game.transports?.forEach(t => t.dispose());
+    room.lastRestart = { gameId: game.id, resultId: game.finalResult.id };
+    room.game = null; room.chat = new RoomChat();
+    room.participants.forEach(p => { p.characterId = null; });
+    const view = this.publicRoom(room); this.onRoomReset(view);
+    return { ok: true, value: view };
+  }
+
   start(socketId: string): RoomReply<PublicRoom> {
     const connection = this.connections.get(socketId);
     if (!connection) return fail("invalid-credentials");
@@ -342,6 +408,7 @@ export class RoomManager {
       voting: new RoomVoting(room.participants.map((player, index) => ({ participantId: player.id, alive: isAlive(characters[index]!) })),
         this.clock, () => { this.resolveRound(room); this.publishVoting(room); }) };
     room.participants.forEach((player, index) => { player.characterId = characters[index]!.id; });
+    this.observeSurvivor(room);
     return { ok: true, value: this.publicRoom(room) };
   }
 

@@ -1,4 +1,5 @@
 import { internalIntermediateRoute } from "./intermediate-rounds.js";
+import { collectiveNarrative } from './final-narrative.js';
 import { publicRouteViews, privateRouteViews } from "./routes.js";
 import type { FinalNpc, GameFinalResult, PrivateObjectiveEvidence } from "@everest/shared";
 import { isAlive, type SimulationState } from "./state.js";
@@ -62,11 +63,13 @@ export function buildFinalResult(state: SimulationState, people: readonly { char
       completed: true, accident: thirdMovement.outcome.accident, victimIds: thirdMovement.outcome.victimIds.map(publicId) }
     : secondMovement?.status === "completed" ? { routeName: secondName!, completed: true, accident: secondMovement.accident, victimIds: secondMovement.victims.map(v => publicId(v.characterId)) }
     : state.roundOne?.completed ? { routeName: "Paso obligatorio de ronda 1", completed: true, accident: false, victimIds: [] } : null;
-  return { id: metadata.id, gameId: metadata.gameId, closedAt: metadata.closedAt, round: state.currentRound, kind, humans, npcs,
+  const result: GameFinalResult = { id: metadata.id, gameId: metadata.gameId, closedAt: metadata.closedAt, round: state.currentRound, kind, humans, npcs,
     counts: { evacuated: humans.filter(c => c.status === "evacuated").length, dead: humans.filter(c => c.status === "dead").length,
       abandoned: humans.filter(c => c.status === "abandoned").length, rescuedNpcs: npcs.filter(n => n.status === "rescued").length,
       evacuatedNpcs: npcs.filter(n => n.evacuated === true).length }, inventory: { ...state.inventory }, crowbar: state.tools.crowbar,
     lastMovement, decisions };
+  result.narrative = collectiveNarrative(result);
+  return result;
 }
 
 function npcDescription(npc: FinalNpc): string {

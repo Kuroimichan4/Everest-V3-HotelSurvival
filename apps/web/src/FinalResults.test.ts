@@ -6,6 +6,8 @@ import { GameScreen, type GameActions } from "./GameScreen";
 import { emptyGame, gameReducer } from "./game-state";
 import { bindGameSocket, type GameSocket } from "./game-socket";
 import { FinalResults } from "./FinalResults";
+import { collectiveNarrative, objectiveNarrative, survivalNarrative } from '../../server/src/simulation/final-narrative';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const result: GameFinalResult = { id: "final", gameId: "game", closedAt: 1000, round: 6, kind: "evacuation-completed",
   humans: ["maintenance", "medic", "architect-engineer", "bellhop"].map((role, i) => ({ participantId: `p${i}`, name: `Persona ${i}`, role: role as GameFinalResult["humans"][number]["role"],
@@ -16,6 +18,64 @@ const result: GameFinalResult = { id: "final", gameId: "game", closedAt: 1000, r
 const objective: PrivateObjectiveEvidence = { resultId: "final", participantId: "p2", objective: "OBJETIVO PROPIO", evaluation: "pending-evaluation", evidenceState: "confirmed", facts: ["HECHO PROPIO"], missing: ["Evaluación pendiente."] };
 const actions: GameActions = { onVote: vi.fn(), onRoute: vi.fn(), onOpenThree: vi.fn(), onAdvance: vi.fn(), onOpenTransport: vi.fn(), onRetry: vi.fn(), onGive: vi.fn(), onTreat: vi.fn() };
 const render = (value = objective) => renderToStaticMarkup(createElement(GameScreen, { state: { ...emptyGame, final: result, objective: value }, participantId: "p2", connected: true, busy: false, actions, error: "" }));
+
+test('dramatic collective, own objective and survival prose render without losing facts or exposing foreign text', () => {
+  const final = { ...result, narrative: collectiveNarrative(result), personalEpilogue: { participantId: 'p2', text: survivalNarrative(result.gameId, 'p2', 'evacuated') } };
+  const own = { ...objective, evaluation: 'unfulfilled' as const, narrative: objectiveNarrative(result.gameId, 'p2', 'architect-engineer', 'unfulfilled') };
+  const html = renderToStaticMarkup(createElement(FinalResults, { result: final, objective: own, participantId: 'p2', connected: true }));
+  for (const text of [final.narrative.title, own.narrative, final.personalEpilogue.text, 'HECHO PROPIO', 'Recursos restantes:']) expect(html).toContain(text);
+  expect(html).toContain('aria-label="Valoración colectiva"'); expect(html).toContain('aria-label="El destino de tu personaje"');
+  const foreign = renderToStaticMarkup(createElement(FinalResults, { result: { ...final, personalEpilogue: { participantId: 'other', text: 'EPÍLOGO AJENO' } },
+    objective: { ...own, participantId: 'other', narrative: 'ELOGIO AJENO' }, participantId: 'p2', connected: true }));
+  expect(foreign).not.toContain('EPÍLOGO AJENO'); expect(foreign).not.toContain('ELOGIO AJENO');
+});
+
+test('final narrative desktop/mobile fixtures preserve fulfilled, unfulfilled and pending descriptions', () => {
+  const dir = new URL('../../../.cache/10k1/', import.meta.url); mkdirSync(dir, { recursive: true });
+  const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+  for (const [name, status, evaluation] of [['complete', 'evacuated', 'fulfilled'], ['mixed', 'abandoned', 'unfulfilled'], ['fatal', 'dead', 'pending-evaluation']] as const) {
+    const final: GameFinalResult = { ...result, kind: name === 'fatal' ? 'no-active-humans' : 'evacuation-completed',
+      humans: result.humans.map((p, i) => ({ ...p, status: name === 'complete' ? 'evacuated' : name === 'fatal' ? 'dead' : i === 2 ? status : p.status })),
+      counts: { ...result.counts, evacuated: name === 'complete' ? 4 : name === 'fatal' ? 0 : 1, dead: name === 'fatal' ? 4 : name === 'complete' ? 0 : 1, abandoned: name === 'mixed' ? 2 : 0 },
+      personalEpilogue: { participantId: 'p2', text: survivalNarrative(result.gameId, 'p2', status) } };
+    final.narrative = collectiveNarrative(final);
+    const own = { ...objective, evaluation, narrative: objectiveNarrative(result.gameId, 'p2', 'architect-engineer', evaluation) };
+    const html = renderToStaticMarkup(createElement(FinalResults, { result: final, objective: own, participantId: 'p2', connected: true }));
+    expect(html).toContain('data-game-screen="final"'); expect(html).toContain(`data-evaluation="${evaluation}"`);
+    writeFileSync(new URL(name + '.html', dir), '<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>' + css + '</style></head><body><main class="shell">' + html + '</main></body></html>');
+  }
+});
+
+test('only the host sees New Game; an eliminated host retains this administrative control', () => {
+  const room = { code: 'ROOM', creatorId: 'p1', status: 'started' as const, participants: result.humans.map(p => ({ id: p.participantId, name: p.name, connected: true })) };
+  const restart = vi.fn();
+  const renderFor = (participantId: string, connected = true) => renderToStaticMarkup(createElement(GameScreen, {
+    state: { ...emptyGame, final: result, room: { ...room, participants: room.participants.map((p, i) => ({ ...p, connected: i === 3 ? connected : true })) } },
+    participantId, connected: true, busy: false, error: '', actions: { ...actions, onNewGame: restart },
+  }));
+  expect(result.humans[1]!.status).toBe('dead');
+  expect(renderFor('p1')).toContain('Nueva partida'); expect(renderFor('p2')).not.toContain('Nueva partida');
+  expect(renderFor('p1', false)).toContain('<button disabled=""');
+});
+
+test('room reset clears every previous game projection and preserves the room identity', () => {
+  const room = { code: 'ROOM', creatorId: 'p1', status: 'waiting' as const, participants: result.humans.map(p => ({ id: p.participantId, name: p.name, connected: true })) };
+  const old = { ...emptyGame, final: result, objective, ownVote: { decisionId: 'old', attemptId: 'old', optionId: 'rescue' } };
+  expect(gameReducer(old, { type: 'reset', value: room })).toEqual({ ...emptyGame, room }); expect(old.final).toBe(result);
+});
+
+test('reset listener clears private data exactly once and is removed with the connection binding', () => {
+  const listeners = new Map<string, Set<(v: unknown) => void>>();
+  const socket = { on: (name: string, fn: (v: unknown) => void) => { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name)!.add(fn); },
+    off: (name: string, fn: (v: unknown) => void) => { listeners.get(name)?.delete(fn); } } as unknown as GameSocket;
+  const lifecycle = { chat: vi.fn(), sabotage: vi.fn(), personalDeath: vi.fn(), reset: vi.fn(), participantId: () => 'p1', connect: vi.fn(), disconnect: vi.fn(), error: vi.fn() }; const dispatch = vi.fn();
+  const unbind = bindGameSocket(socket, dispatch, lifecycle); const reset = [...listeners.get('room:reset')!][0]!;
+  const room = { code: 'ROOM', creatorId: 'p1', status: 'waiting', participants: [] }; reset(room);
+  expect(dispatch).toHaveBeenCalledExactlyOnceWith({ type: 'reset', value: room });
+  for (const callback of [lifecycle.chat, lifecycle.sabotage, lifecycle.personalDeath]) expect(callback).toHaveBeenCalledExactlyOnceWith(null);
+  expect(lifecycle.reset).toHaveBeenCalledTimes(1); unbind(); reset(room); expect(lifecycle.reset).toHaveBeenCalledTimes(1);
+  for (const value of listeners.values()) expect(value.size).toBe(0);
+});
 
 test("10A: final screen accepts private numeric fields omitted by the server and retains all outcomes", () => {
   const projected = { ...result, humans: result.humans.map((p, i) => {

@@ -1,108 +1,170 @@
 # Everest-V3-HotelSurvival
 
-Simulación web multijugador de liderazgo y gestión de crisis en un hotel parcialmente derrumbado tras un terremoto.
+Simulación web multijugador de supervivencia en un hotel parcialmente derrumbado tras un terremoto. Cuatro participantes humanos recorren seis rondas, debaten y votan cómo continuar, gestionan recursos y utilizan capacidades de roles asimétricos: Mantenimiento, Médico, Arquitecto/Ingeniero y Botones.
 
-## Estado actual
+Incluye fichas privadas, chat en tiempo real, encuentros con supervivientes NPC que piden ayuda, resultados colectivos e individuales con narrativa dramática y una opción de nueva partida. Los NPC funcionan sin conexión en modo de demostración o, opcionalmente, generan argumentos mediante Gemini API. Sus mensajes no votan ni ejecutan acciones del juego.
 
-La base técnica incluye frontend, backend, contratos compartidos, pruebas y configuración inicial de Prisma. Ya existe un motor básico de salud, energía y packs, además de salas de cuatro participantes con espera, inicio manual por el creador, asignación aleatoria de roles y reconexión. La pantalla mantiene las comprobaciones HTTP y Socket.IO. Las salas viven provisionalmente en memoria y se pierden al reiniciar el servidor. Todavía no hay rondas, votaciones, persistencia de partidas ni proveedor de IA.
+## Tecnologías y estructura
 
-Consulta [el motor básico](apps/server/src/simulation/README.md) y [las salas multijugador](apps/server/src/rooms/README.md), con instrucciones para probar cuatro sesiones independientes.
+- React 19, TypeScript estricto y Vite para la interfaz.
+- Node.js, Fastify y Socket.IO para un único servidor autoritativo y comunicación en tiempo real.
+- Contratos compartidos en `packages/shared`; npm workspaces y `package-lock.json`.
+- Vitest y clientes Socket.IO reales para las pruebas; `tsx` para desarrollo del servidor.
+- Gemini API opcional mediante `fetch` nativo de Node, sin SDK externo.
 
-Los documentos originales de `docs/` se conservan íntegros. Las decisiones posteriores confirmadas por la autora prevalecen sobre las propuestas anteriores. Las últimas correcciones incluyen objetivos por rol ya definidos, accidentes sobre dos humanos vivos distintos (un único vivo sigue pendiente), tratamiento de NPC mediante la votación de rescate y revocación de información privada al fallecer. No se implementan esas mecánicas en esta fase; puntuación y casos pendientes requieren revisión.
+```text
+apps/web/              Interfaz React y Vite
+apps/server/src/       Servidor, salas, simulación y agente NPC
+packages/shared/       Contratos públicos
+scripts/               Comprobaciones locales
+apps/server/prisma/    Preparación inicial, sin base de datos operativa
+docs/                  Documentos originales conservados
+```
+
+Las partidas, credenciales de sala e historiales se conservan **en memoria**: F5 recupera la sesión mientras viva el servidor, pero reiniciar Node pierde las salas. No hay persistencia en PostgreSQL ni puntuaciones numéricas.
 
 ## Requisitos
 
-- Node.js 24 LTS, versión 24.11 o superior dentro de la rama 24.
-- npm 11.
-- No hace falta PostgreSQL para arrancar esta base ni ejecutar sus pruebas.
+- Node.js **24.11.0 o posterior dentro de la rama 24** (`>=24.11.0 <25`).
+- npm **11**; el repositorio declara npm 11.19.1.
+- Un navegador moderno. Para cuatro participantes locales, usar navegadores o perfiles independientes.
+- No se necesita clave API, base de datos, migraciones ni herramientas globales para jugar en demo.
 
-Desde VS Code abre **la raíz de este repositorio** y utiliza sus terminales integradas:
+Abrir una terminal **en la raíz del repositorio**. Con una instalación convencional compatible de Node.js:
 
 ```powershell
 node --version
 npm.cmd --version
 ```
 
-En Windows se usa `npm.cmd` para evitar depender de la política de ejecución de scripts de PowerShell. En otros sistemas utiliza `npm`.
+En Windows se usa `npm.cmd` para evitar depender de la política de scripts de PowerShell. En macOS/Linux utilizar `npm` en lugar de `npm.cmd` y omitir las instrucciones de PATH específicas de Windows.
 
-Si se ha descargado Node portátil en este proyecto, puedes habilitarlo solo para la terminal actual:
+### Node portátil en Windows
+
+Si se utiliza la distribución local existente, ejecutar **en cada terminal nueva**:
 
 ```powershell
 $env:Path = "$PWD\.tools\node-v24.22.1-win-x64;$env:Path"
+node --version
+npm.cmd --version
 ```
 
-Repite esa línea en cada terminal que necesite Node portátil. `.tools/` no se incluye en Git y no estará presente en un clon nuevo.
+`.tools/` no se versiona ni se necesita con una instalación convencional de Node. Quien clone el proyecto debe instalar Node compatible o aportar su propia distribución portátil.
 
-## Instalación local
+## Instalación y configuración
 
-Ejecuta una única instalación desde la raíz; npm enlaza los tres workspaces:
+Instalar una vez desde la raíz; npm enlaza los tres workspaces:
 
 ```powershell
 npm.cmd ci
 ```
 
-`package-lock.json` fija las versiones. Para cambios deliberados de dependencias se utiliza `npm.cmd install`. No se necesitan instalaciones globales. La caché de npm se guarda en `.cache/npm` dentro del repositorio. `allowScripts` declara los scripts de instalación de las versiones concretas de Prisma, sus motores y esbuild utilizadas por esta base, evitando el aviso de scripts no declarados de npm 11.19.
+El lockfile fija las dependencias. `.npmrc` exige versiones compatibles y guarda la caché en `.cache/npm`. Detener los procesos de desarrollo antes de reinstalar: Windows puede bloquear bibliotecas nativas abiertas.
 
-Antes de reinstalar con `npm ci`, detén los servidores. En Windows, un proceso de Vite que siga abierto puede bloquear su biblioteca nativa y provocar `EPERM`; cierra ese proceso y repite la instalación.
-
-La configuración por defecto permite arrancar sin `.env`. Si necesitas cambiarla:
+La aplicación puede arrancar en demo sin archivo `.env`. Para preparar una configuración local, copiar la plantilla **solo si no existe ya**:
 
 ```powershell
-Copy-Item .env.example .env
+if (-not (Test-Path -LiteralPath .env)) {
+    Copy-Item -LiteralPath .env.example -Destination .env
+}
 ```
 
-`HOST` y `PORT` configuran Fastify. `BACKEND_URL` es el destino del proxy de Vite y debe coincidir con la dirección del backend. `WEB_ORIGIN` indica el origen del frontend para Socket.IO y las comprobaciones. Reinicia los procesos después de cambiar estas variables. Solo las variables con prefijo `VITE_` se exponen al navegador: nunca pongas secretos en ellas.
+No sobrescribir un `.env` que ya contenga configuración privada. La plantilla `.env.example` contiene una clave vacía y `SURVIVOR_AI_MODE=demo`.
 
-## Ejecutar en desarrollo
+| Variable | Uso / valor inicial |
+|---|---|
+| `HOST` | Servidor local: `127.0.0.1` |
+| `PORT` | Fastify: `3001` |
+| `WEB_ORIGIN` | Frontend de desarrollo: `http://localhost:5173` |
+| `BACKEND_URL` | Destino del proxy Vite: `http://127.0.0.1:3001` |
+| `SURVIVOR_AI_MODE` | `demo` por defecto; opcionalmente `gemini` |
+| `GEMINI_API_KEY` | Secreto del servidor, vacío en la plantilla |
+| `GEMINI_MODEL` | Modelo configurable: `gemini-3.5-flash-lite` |
+| `SURVIVOR_AI_TIMEOUT_MS` | `2500`; admite 100–4000 ms |
+| `SURVIVOR_AI_MAX_CALLS` | `15` por partida; admite 0–15 |
 
-En una terminal, desde la raíz:
+El servidor carga `.env` de la raíz; las variables ya definidas en el entorno tienen prioridad. Vite usa `BACKEND_URL` para su proxy y solo expone al cliente variables con prefijo `VITE_`. **Nunca poner claves en variables `VITE_*`.** Reiniciar los procesos después de cambiar configuración.
+
+## Arranque en desarrollo
+
+Mantener abiertas dos terminales, ambas en la raíz. Si se usa Node portátil, incluir la línea de PATH en **las dos**, no solo en la del servidor.
+
+Terminal del servidor:
 
 ```powershell
+$env:Path = "$PWD\.tools\node-v24.22.1-win-x64;$env:Path" # Omitir con Node instalado
 npm.cmd run dev:server
 ```
 
-En una segunda terminal, también desde la raíz:
+Terminal del frontend:
 
 ```powershell
+$env:Path = "$PWD\.tools\node-v24.22.1-win-x64;$env:Path" # Omitir con Node instalado
 npm.cmd run dev:web
 ```
 
-- Frontend: <http://localhost:5173>.
-- Backend directo: <http://127.0.0.1:3001/api/health>.
-- Backend a través del frontend: <http://localhost:5173/api/health>.
+Estos scripts compilan los contratos compartidos; el servidor se ejecuta con `tsx watch` y el frontend con Vite.
 
-Abre el frontend en el navegador: «Servidor» y «Tiempo real» deben mostrar «Conectado». Detén cada proceso con `Ctrl+C` en su terminal.
+- Juego: **http://localhost:5173**.
+- Salud del servidor: http://127.0.0.1:3001/api/health.
+- Salud a través del proxy: http://localhost:5173/api/health.
 
-En esta sesión, `tsx` no pudo consultar los datos del usuario de Windows dentro del sandbox (`uv_os_get_passwd`); el mismo comando arrancó correctamente con permiso para ejecutarse fuera de él. Es una limitación observada del entorno restringido, no requiere cambiar la configuración global de Windows.
+Abrir el juego, no el puerto del backend. Socket.IO y `/api` pasan por el mismo proxy de Vite. Detener con `Ctrl+C`. Los puertos del frontend son estrictos: si están ocupados, detener la instancia anterior o revisar el proceso que los utiliza.
 
-El frontend llama a `/api/health` y conecta Socket.IO al mismo origen. Vite reenvía `/api` y `/socket.io` a Fastify. Esto evita añadir una biblioteca CORS HTTP para esta configuración local. Fastify y Socket.IO comparten un único servidor HTTP.
+### Jugar sin Gemini
 
-## Comprobar el proyecto
+Conservar `SURVIVOR_AI_MODE=demo` en `.env`. No requiere clave ni realiza llamadas al proveedor. Para forzar demo en la terminal del servidor aunque el archivo local tenga otro modo:
 
-Estos comandos no necesitan una base de datos ni los servidores de desarrollo arrancados:
+```powershell
+$env:SURVIVOR_AI_MODE = 'demo'
+npm.cmd run dev:server
+```
+
+El modo demo usa mensajes deterministas, no un modelo generativo real.
+
+### Activar Gemini opcionalmente
+
+1. Crear una clave en [Google AI Studio](https://aistudio.google.com/api-keys) y comprobar disponibilidad, nivel de facturación y cuotas del proyecto.
+2. Guardarla únicamente en el `.env` privado y establecer `SURVIVOR_AI_MODE=gemini`. Conservar o ajustar `GEMINI_MODEL`, timeout y presupuesto. No escribir la clave en `.env.example`, el código, el chat o capturas públicas.
+3. Si se forzó demo en PowerShell, establecer `$env:SURVIVOR_AI_MODE = 'gemini'` en esa terminal o retirar esa variable de proceso para volver a utilizar el archivo.
+4. Reiniciar el servidor y comenzar una nueva partida.
+
+Gemini genera argumentos durante las votaciones de rescate, sujeto a disponibilidad y condiciones de Google. Si falla, se agota la cuota o tarda demasiado, se utiliza el respaldo determinista. El límite local de llamadas no sustituye las cuotas y condiciones del proveedor. El modelo no recibe conversación humana ni información privada de los jugadores.
+
+## Cómo jugar con cuatro personas
+
+1. Abrir http://localhost:5173 en cuatro navegadores o perfiles independientes. También pueden utilizarse ventanas privadas que mantengan almacenamientos separados; varias pestañas del mismo perfil pueden reutilizar la misma credencial.
+2. Una persona crea una sala y comparte su código; las otras tres se unen con sus nombres.
+3. El anfitrión inicia cuando los cuatro están conectados. Cada participante consulta su ficha privada y los controles autorizados para su rol.
+4. Debatir mediante el chat, compartir voluntariamente información y votar antes de que termine el plazo. Escribir en el chat no revela rutas oficialmente ni ejecuta capacidades.
+5. Utilizar las capacidades disponibles y gestionar recursos mientras se avanza por las seis rondas. Los encuentros NPC y las decisiones de transporte se resuelven con sus propios controles.
+6. Consultar el desenlace colectivo y el objetivo privado propio. No todos los personajes tienen los mismos permisos ni información.
+7. Tras revisar los resultados, el anfitrión puede pulsar **Nueva partida** si están los cuatro conectados. Todos vuelven al lobby, se borra el chat anterior y el inicio existente crea una partida nueva con recursos reiniciados y otro sorteo de roles.
+
+F5 recupera la sesión mientras la sala exista en el proceso del servidor. Los personajes eliminados mantienen sus restricciones. No se incluyen aquí los objetivos secretos de los roles.
+
+### Cuatro dispositivos en una red local
+
+La configuración entregada escucha en **loopback**: Vite usa `localhost` y Fastify `127.0.0.1`. No basta con abrir la IP del ordenador desde otro dispositivo. El acceso LAN requiere revisar interfaces de escucha, origen, proxy y firewall; queda pendiente de una configuración y autorización específicas. No se habilita exposición pública ni se relajan controles en esta entrega.
+
+## Comprobaciones y compilación
+
+Desde la raíz, con Node disponible:
 
 ```powershell
 npm.cmd run typecheck
 npm.cmd test
 npm.cmd run build
-npm.cmd run prisma:validate
+git diff --check
 ```
 
-- `typecheck`: comprueba TypeScript estricto en todos los paquetes.
-- `test`: ejecuta Vitest; comprueba el motor, las salas, el endpoint HTTP y conexiones reales Socket.IO en puertos temporales.
-- `build`: compila primero los contratos, después el backend y finalmente el frontend.
-- `prisma:validate`: valida la configuración y el esquema vacío; no conecta con PostgreSQL ni aplica migraciones.
-- `test:watch`: mantiene Vitest escuchando cambios.
+- `typecheck`: compila los contratos y comprueba TypeScript estricto.
+- `test`: ejecuta Vitest, incluido motor, permisos, salas, reinicio y conexiones Socket.IO reales. Las pruebas del proveedor usan respuestas simuladas; no llaman a Gemini.
+- `build`: compila contratos, servidor e interfaz. Genera `dist/` en los workspaces.
 
-Con **ambos servidores de desarrollo en marcha**, abre una tercera terminal:
+Con ambos servicios de desarrollo encendidos se puede ejecutar `npm.cmd run smoke` en otra terminal para verificar HTTP, proxy y Socket.IO. Si se pretende una comprobación sin proveedor, arrancar primero el servidor en demo.
 
-```powershell
-npm.cmd run smoke
-```
-
-Esta comprobación solicita el HTML del frontend, consulta Fastify a través del proxy y comprueba mensajes de ida y vuelta de Socket.IO por polling y WebSocket. No sustituye una revisión visual del navegador.
-
-Para comprobar los archivos compilados después de `build`, usa dos terminales:
+Para comprobar los compilados localmente después de `build`, en dos terminales:
 
 ```powershell
 npm.cmd run start:server
@@ -112,36 +174,16 @@ npm.cmd run start:server
 npm.cmd run preview:web
 ```
 
-El frontend compilado se sirve en <http://localhost:4173>. Son comandos de vista previa local, no un despliegue de producción.
+La vista previa está en http://localhost:4173. Ajustar `WEB_ORIGIN=http://localhost:4173` para esa sesión del servidor y del comando smoke si se utiliza. Es una vista previa local; no constituye una configuración de despliegue público.
 
-## Carpetas y archivos principales
+## Base de datos y archivos generados
 
-```text
-apps/
-  web/                 React, estilos, Vite y cliente Socket.IO
-  server/
-    src/               Fastify, configuración, Socket.IO y pruebas
-    prisma/            Esquema inicial sin modelos
-    prisma.config.ts   Configuración de Prisma para PostgreSQL
-packages/
-  shared/              Contratos públicos HTTP y Socket.IO
-scripts/
-  smoke.mjs            Verificación con ambos servicios arrancados
-docs/                  Documentación original conservada
-```
+Prisma y `@prisma/client` están declarados por la preparación inicial, pero el juego actual no utiliza una base de datos. No se necesita generar un cliente, crear PostgreSQL ni ejecutar migraciones para instalar, compilar o jugar. `DATABASE_URL` de la plantilla es ficticia y no activa persistencia. `npm.cmd run prisma:validate` es una comprobación opcional del esquema inicial.
 
-`App.tsx` usa estado de React para mostrar las conexiones y un efecto para abrirlas y cerrarlas. `app.ts` construye el servidor sin arrancarlo automáticamente, lo que permite probarlo. `index.ts` lo inicia y atiende las señales de cierre. `packages/shared/src/index.ts` define las formas de los mensajes; no contiene reglas ni información privada del juego.
+Para entregar o clonar se necesitan el código fuente, manifiestos de los workspaces, `package-lock.json`, `.npmrc`, configuración TypeScript/Vite/Vitest, `.env.example` y este README. No incluir `node_modules/`, `dist/`, `.cache/`, `.tools/`, logs, `.env` ni copias de credenciales. Se regeneran dependencias y compilados con los pasos anteriores. Los documentos originales de `docs/` se conservan íntegros.
 
-`tsx` es una utilidad de desarrollo para ejecutar y reiniciar el backend TypeScript. Los paquetes `@types/*` proporcionan tipos. No se añaden frameworks, servicios ni infraestructura fuera de la arquitectura aprobada.
+## Seguridad de credenciales
 
-## Prisma y PostgreSQL
+`.gitignore` excluye `.env` y sus copias; únicamente `.env.example` se permite como plantilla versionada y debe conservar las claves vacías. Ignorar un archivo no elimina una clave de commits anteriores. Si una clave llegó a versionarse, revocarla en Google AI Studio y reemplazarla en el entorno privado; no basta con borrar su línea de la versión actual. No publicar configuraciones completas en logs o mensajes de error.
 
-`schema.prisma` contiene únicamente el proveedor PostgreSQL y la configuración del generador. No incluye entidades de juego ni modelos ficticios para hacer funcionar una prueba.
-
-La URL de ejemplo tiene credenciales ficticias y no se utiliza al arrancar el servidor. No se crea ni se consulta una base de datos. El cliente de Prisma se preparará cuando se apruebe un esquema con modelos; en esta fase no se genera ni se importa desde la aplicación.
-
-No ejecutes migraciones ni sincronizaciones de esquema como parte de estas instrucciones. Antes de conectar PostgreSQL quedan pendientes el modelo definitivo, sus permisos, la configuración local de conexión y el adaptador necesario para Prisma 7.
-
-## Siguiente fase
-
-Revisar las salas y aprobar un alcance concreto antes de continuar. Siguen pendientes liberación de plazas, transferencia del creador, persistencia, varias reglas de rondas, votación, fallecimiento, evaluación y puntuación. La función del agente de IA también necesita aprobación específica.
+La plantilla mantiene la clave vacía; la aplicación no activa Gemini automáticamente ni configura acceso público o persistencia. Una distribución portátil de Node, los servicios externos y sus cuotas no forman parte del repositorio.

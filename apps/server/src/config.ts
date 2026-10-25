@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadEnvFile } from "node:process";
+import { readSurvivorConfig } from './rooms/survivor-gemini.js';
 
 export function readServerConfig() {
   // src/ y dist/ tienen la misma profundidad respecto a la raiz del monorepo.
@@ -14,5 +15,6 @@ export function readServerConfig() {
     host: process.env["HOST"] ?? "127.0.0.1",
     port,
     webOrigin: process.env["WEB_ORIGIN"] ?? "http://localhost:5173",
+    survivor: readSurvivorConfig(process.env),
   };
 }

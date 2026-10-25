@@ -23,7 +23,7 @@ test('four sessions share untimed introduction, F5 preserves waiting, only host 
  expect((await clients[1]!.timeout(3000).emitWithAck('room:start'))).toMatchObject({ok:false,error:'not-creator'});
  const old=clients[3]!.id!;clients[3]!.disconnect();await vi.waitFor(()=>expect(manager.privateRole(old)).toBeNull());clients[3]=await connect();attach(clients[3]!,3);const resumed=await clients[3]!.timeout(3000).emitWithAck('room:resume',sessions[3]!.credential);expect(resumed).toMatchObject({ok:true,value:{room:{status:'waiting'}}});expect(votes).toEqual([]);expect(clock.tasks.size).toBe(0);
  expect((await clients[0]!.timeout(3000).emitWithAck('room:start')).ok).toBe(true);await vi.waitFor(()=>expect(roles.every(Boolean)&&rooms.every(r=>r?.status==='started')).toBe(true));
- const vote=manager.publicVote(code)!;expect(vote.deadline-clock.now()).toBe(60000);expect(clock.tasks.size).toBe(1);expect(votes).toHaveLength(4);
+ const vote=manager.publicVote(code)!;expect(vote.deadline-clock.now()).toBe(60000);expect(clock.tasks.size).toBe(3);expect([...clock.tasks].filter(t=>t.at===vote.deadline)).toHaveLength(1);expect(votes).toHaveLength(4);
  for(let i=0;i<4;i++){expect(roles[i]!.participantId).toBe(sessions[i]!.credential.participantId);expect(JSON.stringify(rooms[i])).not.toMatch(/objective|knowledge|sheet/);const sheet=JSON.stringify(roles[i]!.sheet);expect(sheet.includes('conferencia médica')).toBe(roles[i]!.role==='medic');expect(sheet.includes('almacén de suministros')).toBe(roles[i]!.role==='bellhop');}
  }finally{all.forEach(c=>c.disconnect());manager.dispose();await app.close();}
 },15000);
