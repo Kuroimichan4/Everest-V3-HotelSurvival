@@ -97,9 +97,9 @@ test("los transportados sufren humo y accidente; se registran fallecimientos sin
   const result = resolveTransportMovement(state, "movement", { energyCost: 10, accidentProbability: 0.5, accidentDamage: 30, guaranteedDamage: 20 }, plan, random);
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.error);
-  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual([[15, 60], [15, 60], [0, 0], [0, 0]]);
-  expect(result.outcome.victimIds).toEqual([state.characters[3]!.id, state.characters[2]!.id]);
-  expect(result.outcome.deceasedIds).toEqual(state.characters.slice(2).map(c => c.id));
+  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual([[15, 60], [0, 60], [0, 0], [0, 0]]);
+  expect(result.outcome.victimIds).toEqual([state.characters[3]!.id, state.characters[2]!.id, state.characters[1]!.id]);
+  expect(result.outcome.deceasedIds).toEqual(state.characters.slice(1).map(c => c.id));
   expect(result.outcome.damage.slice(2).map(d => [d.total, d.healthLost])).toEqual([[50, 35], [50, 35]]);
   expect(result.state.tools).toBe(state.tools);
   expect(result.state.inventory).toBe(state.inventory);
@@ -112,14 +112,14 @@ test("la resolución de transporte se recupera tras serialización o packs sin r
   const moved = resolveTransportMovement(state, "movement", effects, plan, random);
   expect(moved.ok).toBe(true);
   if (!moved.ok) throw new Error(moved.error);
-  expect(random).toHaveBeenCalledTimes(3);
+  expect(random).toHaveBeenCalledTimes(4);
   const restored = JSON.parse(JSON.stringify(moved.state)) as typeof state;
   const current = consumePack(restored, state.characters[0]!.id).state;
   const repeated = resolveTransportMovement(current, "movement", effects, plan, random);
   expect(repeated.ok).toBe(true);
   expect(repeated.state).toBe(current);
   expect(repeated.state.characters[0]!.energy).toBe(90);
-  expect(random).toHaveBeenCalledTimes(3);
+  expect(random).toHaveBeenCalledTimes(4);
   expect(resolveTransportMovement(current, "movement", { ...effects, energyCost: 21 }, plan, random)).toEqual({ ok: false, state: current, error: "movement-request-conflict" });
 });
 

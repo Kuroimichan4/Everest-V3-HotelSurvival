@@ -1,3 +1,5 @@
+
+const technicalExtra = (role: string, route: string) => route === "shoring" && (role === "maintenance" || role === "architect-engineer") ? 5 : 0;
 import { expect, test, vi } from "vitest";
 import { MOVEMENT_ENERGY } from "./energy-costs.js";
 import { createInitialState } from "./state.js";
@@ -29,7 +31,7 @@ test.each([["unstable-corridor", 20], ["ventilation", 30], ["shoring", 40]] as c
   const ready = resolveRoundTwo(beginRoundTwo(first), "npc", "ABANDON_APPROVED").state;
   const result = resolveRoundTwoMovement(ready, { decisionId: "move", outcome: route, ventilationRevealed: true }, () => 0.99);
   expect(result.ok).toBe(true);
-  expect(result.state.characters.map(c => c.energy)).toEqual([75 - cost, 75 - cost, 75 - cost, 75 - cost]);
+  expect(result.state.characters.map(c => c.energy)).toEqual(ready.characters.map(c => 75 - cost - technicalExtra(c.role, route)));
   expect([...publicRouteViews(), ...privateRouteViews("maintenance")].find(r => r.id === route)!.energyCost).toBe(cost);
 });
 

@@ -33,12 +33,12 @@ test.each([false, true])("NO_AGREEMENT fuerza galería sin daño directo del ter
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.error);
   expect(result.outcome.routeId).toBe("pipe-gallery");
-  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual([[accident ? 50 : 80, 15], [accident ? 50 : 80, 15], [80, 15], [80, 15]]);
+  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual([[accident ? 50 : 80, 15], [accident ? 50 : 80, 15], [accident ? 50 : 80, 15], [80, 15]]);
   expect(result.state.inventory).toEqual(state.inventory);
   expect(result.state.tools).toBe(state.tools);
   expect(result.outcome.gained).toEqual({ packs: 0, medicalUnits: 0 });
-  expect(random).toHaveBeenCalledTimes(accident ? 3 : 1);
+  expect(random).toHaveBeenCalledTimes(accident ? 4 : 1);
   const again = resolveRoundThreeChoice(result.state, { decisionId: "r3", outcome: "NO_AGREEMENT" }, random);
   expect(again.state).toBe(result.state);
-  expect(random).toHaveBeenCalledTimes(accident ? 3 : 1);
+  expect(random).toHaveBeenCalledTimes(accident ? 4 : 1);
 });

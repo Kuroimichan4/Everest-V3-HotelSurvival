@@ -1,3 +1,4 @@
+import { beforeFinalFixture } from "../../test-support/final-stage.js";
 import { expect, test } from "vitest";
 import { createInitialState, type SimulationState } from "./state.js";
 import type { GameFinalResult } from "@everest/shared";
@@ -15,7 +16,7 @@ function setup() {
   const moved = resolveRoundTwoMovement(two.state, { decisionId: "route2", outcome: "ventilation", ventilationRevealed: true }, () => 0.99); if (!moved.ok) throw new Error(moved.error);
   const three = resolveRoundThreeChoice({ ...moved.state, currentRound: 3, characters: moved.state.characters.map(c => ({ ...c, energy: 100 })) },
     { decisionId: "route3", outcome: "NO_AGREEMENT" }, () => 0.99); if (!three.ok) throw new Error(three.error);
-  const four = beginRoundFour(three.state, () => 0); if (!four.ok) throw new Error(four.error);
+  const four = beginRoundFour(beforeFinalFixture(three.state), () => 0); if (!four.ok) throw new Error(four.error);
   return four.state;
 }
 function exit(state: RoundFourState) { const r = resolveRoundFourExit(state, "exit", "exterior-crack", () => 0.99); if (!r.ok) throw new Error(r.error); return r.state; }
@@ -109,7 +110,7 @@ test("known/revealed/traversed routes are never retroactively credited as openin
 
 test("risk is read from real backend catalogues, including forced completed routes; never from a vote alone", () => {
   const state = exit(setup()); const ledger = collectObjectiveLedger(state, result(state), { roundThreeForced: true });
-  expect(ledger.routes).toHaveLength(4);
+  expect(ledger.routes).toHaveLength(6);
   expect(ledger.routes[1]).toMatchObject({ routeId: "ventilation", realRisk: "LOW", completed: true, forcedByNoAgreement: false });
   expect(ledger.routes[2]).toMatchObject({ routeId: "pipe-gallery", realRisk: "EXTREME", forcedByNoAgreement: true });
   expect(assessObjective("architect-engineer", "p-architect-engineer", ledger)).toBe("unfulfilled");
@@ -120,7 +121,7 @@ test("risk is read from real backend catalogues, including forced completed rout
   // Un voto/elección no se introduce como desplazamiento; la función solo lee registros completados.
   const { exit: _exit, ...rest } = withoutExit.roundFour;
   const pendingState = { ...state, roundFour: rest };
-  expect(collectObjectiveLedger(pendingState, result(state)).routes.some(r => r.round === 4)).toBe(false);
+  expect(collectObjectiveLedger(pendingState, result(state)).routes.some(r => r.round === 6)).toBe(false);
 });
 
 test("round one has no declared category: no accident is not evidence of low risk", () => {
@@ -135,13 +136,13 @@ test("NPC evidence is individual, unique and preserves approved, rescued and unc
   const state: RoundFourState = { ...initial, roundOne: { ...initial.roundOne!, result: "RESCUE_APPROVED", npc: "rescued" },
     roundTwo: { ...initial.roundTwo!, resolution: { ...initial.roundTwo!.resolution!, result: "RESCUE_APPROVED", npc: "rescued" } },
     roundFour: { ...initial.roundFour, npc: { encounter: "immobile", status: "awaiting-effort", decision: { id: "npc4", choice: "medical-assist" }, failedAttempts: 0 } } };
-  const dummy: GameFinalResult = { ...result(exit(setup())), npcs: [{ round: 1, status: "rescued", evacuated: null }, { round: 2, status: "rescued", evacuated: null }, { round: 4, status: "approved", evacuated: null }] };
+  const dummy: GameFinalResult = { ...result(exit(setup())), npcs: [{ round: 1, status: "rescued", evacuated: null }, { round: 2, status: "rescued", evacuated: null }, { round: 6, status: "approved", evacuated: null }] };
   const ledger = collectObjectiveLedger(state, dummy);
-  expect(ledger.npcs.map(n => n.id)).toEqual(["round-one-survivor", "round-two-survivor", "round-four-survivor"]);
+  expect(ledger.npcs.map(n => n.id)).toEqual(["round-one-survivor", "round-two-survivor", "round-six-survivor"]);
   expect(ledger.npcs[0]).toMatchObject({ found: true, rescueApproved: true, rescued: true, evacuated: null });
   expect(ledger.npcs[2]).toMatchObject({ rescueApproved: true, rescued: false, medicalUnitsUsed: 0 });
-  expect(assessObjective("bellhop", "p-bellhop", ledger)).toBe("pending-evaluation");
-  expect(assessObjective("bellhop", "p-bellhop", { ...ledger, npcs: ledger.npcs.map(n => ({ ...n, rescueApproved: true, rescued: false })) })).toBe("pending-evaluation");
+  expect(assessObjective("bellhop", "p-bellhop", ledger)).toBe("unfulfilled");
+  expect(assessObjective("bellhop", "p-bellhop", { ...ledger, npcs: ledger.npcs.map(n => ({ ...n, rescueApproved: true, rescued: false })) })).toBe("unfulfilled");
   expect(collectObjectiveLedger(state, dummy)).toEqual(ledger);
 });
 

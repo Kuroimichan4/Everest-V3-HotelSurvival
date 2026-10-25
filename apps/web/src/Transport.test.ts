@@ -2,9 +2,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
 import type { TransportView } from "@everest/shared";
-import { Transport } from "./Transport";
+import { Transport, TransportCrisis } from "./Transport";
 import { GameHistory } from "./GameScreen";
-import { emptyGame } from "./game-state";
+import { emptyGame, activeScene, gameReducer } from "./game-state";
 import { TransportDecision } from "../../server/src/rooms/transport.js";
 import { createInitialState } from "../../server/src/simulation/state.js";
 import { publicRoundThreeRouteViews } from "../../server/src/simulation/round-three-routes.js";
@@ -72,7 +72,7 @@ test.each([[45, 45], [45, 60], [60, 60]])("8C: React muestra costes y permisos c
   const execute = vi.fn(() => null);
   const controller = new TransportDecision({ round: 3, id: route.id, name: route.name, cost: route.energyCost },
     () => state, execute, { now: () => 1000, schedule: () => () => {} }, () => {},
-    state.characters.map((c, i) => ({ characterId: c.id, participantId: `p${i}`, name: `P${i}` })));
+    state.characters.map((c, i) => ({ characterId: c.id, participantId: `p${i}`, name: `P${i}` })), { readActual: () => state, commit: () => {}, evacuateSector: () => {} });
   controller.open(controller.preparationId);
   const view = controller.view();
   expect(view.routeCost).toBe(30);
@@ -89,4 +89,13 @@ test.each([[45, 45], [45, 60], [60, 60]])("8C: React muestra costes y permisos c
   }
   expect(execute).not.toHaveBeenCalled();
   controller.dispose();
+});
+
+test("crisis narrative and history are idempotent and show only projected personal damage",()=>{
+ const v=state();const c=v.cases[0]!;c.vote!.attemptNumber=3;c.crisis={gas:{incidentId:'prep',at:91000,victims:[{participantId:'a'},{participantId:'c',damage:5}],deceasedIds:[]}};
+ const html=renderToStaticMarkup(createElement(TransportCrisis,{state:c,participantId:'c'}));expect(html).toContain('Solo quedan diez segundos');expect(html).toContain('5 puntos');expect(html).not.toContain('Fallecidos por la fuga');
+ let game={...emptyGame,transport:v};expect(gameReducer(game,{type:'transport',value:structuredClone(v)})).toBe(game);
+ c.phase='sector-evacuated';c.vote!.status='closed';c.crisis.explosion={incidentId:'prep',at:101000,victims:[{participantId:'c',damage:5}],deceasedIds:['a']};
+ expect(render(v,'c')).toBe('');const history=renderToStaticMarkup(createElement(GameHistory,{state:game}));expect(history.match(/Fuga de gas/g)).toHaveLength(1);expect(history.match(/Evacuación precipitada del sector/g)).toHaveLength(1);expect(history).not.toContain('Ruta completada');
+ expect(activeScene({...game,supplies:{gameId:'game',round:4,windowId:'next',inventory:{packs:8,medicalUnits:4},characters:[]}})).toMatchObject({round:4,transport:undefined,vote:null});
 });

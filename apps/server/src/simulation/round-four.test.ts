@@ -1,3 +1,4 @@
+import { beforeFinalFixture } from "../../test-support/final-stage.js";
 import { describe, expect, it, vi } from "vitest";
 import { createInitialState, isAlive, type SimulationState } from "./state.js";
 import { resolveRoundThreeRoute } from "./round-three-routes.js";
@@ -14,7 +15,7 @@ function unwrap(result: RoundFourResult): RoundFourState {
 function previous(): SimulationState {
   const result = resolveRoundThreeRoute({ ...createInitialState(), currentRound: 3 }, "r3", "metal-debris", () => 0.9);
   if (!result.ok) throw new Error(result.error);
-  return result.state;
+  return beforeFinalFixture(result.state);
 }
 function start(roll = 0): RoundFourState {
   const result = beginRoundFour(previous(), () => roll);
@@ -74,8 +75,8 @@ describe("round four: encounter and state continuity", () => {
 
 describe("exit catalogue, availability and accidents", () => {
   it("retains exact internal definitions and two vote durations", () => {
-    expect(ROUND_FOUR_ROUTES["revolving-door"]).toMatchObject({ energyCost: 20, danger: "LOW", accidentProbability: 0.1, accidentDamage: 5 });
-    expect(ROUND_FOUR_ROUTES["exterior-crack"]).toMatchObject({ energyCost: 10, danger: "EXTREME", accidentProbability: 0.5, accidentDamage: 30 });
+    expect(ROUND_FOUR_ROUTES["revolving-door"]).toMatchObject({ energyCost: 20, danger: "LOW", accidentProbability: 0.2, accidentDamage: 5 });
+    expect(ROUND_FOUR_ROUTES["exterior-crack"]).toMatchObject({ energyCost: 10, danger: "EXTREME", accidentProbability: 0.7, accidentDamage: 30 });
     expect(ROUND_FOUR_VOTE_SECONDS).toEqual([60, 30]);
   });
   it("requires the existing crowbar only for the door and never recreates it", () => {
@@ -94,16 +95,16 @@ describe("exit catalogue, availability and accidents", () => {
     expect(next.characters.map(c => c.energy)).toEqual([100 - cost, 100 - cost, 100 - cost, 100 - cost]);
     expect(next.tools).toBe(state.tools);
   });
-  it.each([["revolving-door", 0.0999, 5], ["exterior-crack", 0.4999, 30]] as const)("%s accident damages two distinct living humans", (id, roll, damage) => {
+  it.each([["revolving-door", 0.0999, 5], ["exterior-crack", 0.4999, 30]] as const)("%s accident damages three distinct living humans", (id, roll, damage) => {
     const state = start();
-    const samples = [roll, 0, 0];
+    const samples = [roll, 0, 0, 0];
     const next = unwrap(resolveRoundFourExit(state, "exit", id, () => samples.shift()!));
     const outcome = next.roundFour.exit!;
-    expect(new Set(outcome.victimIds).size).toBe(2);
-    expect(next.characters.map(c => c.health)).toEqual([100 - damage, 100 - damage, 100, 100]);
-    expect(outcome.damage.filter(d => d.total === damage)).toHaveLength(2);
+    expect(new Set(outcome.victimIds).size).toBe(3);
+    expect(next.characters.map(c => c.health)).toEqual([100 - damage, 100 - damage, 100 - damage, 100]);
+    expect(outcome.damage.filter(d => d.total === damage)).toHaveLength(3);
   });
-  it.each([["revolving-door", 0.1], ["exterior-crack", 0.5]] as const)("%s excludes its probability boundary", (id, roll) => {
+  it.each([["revolving-door", 0.2], ["exterior-crack", 0.7]] as const)("%s excludes its probability boundary", (id, roll) => {
     const random = vi.fn(() => roll);
     const state = unwrap(resolveRoundFourExit(start(), "exit", id, random));
     expect(state.roundFour.exit!.accident).toBe(false);
@@ -121,9 +122,9 @@ describe("exit catalogue, availability and accidents", () => {
     const initial = start();
     const state = firstFailure({ ...initial, characters: initial.characters.map(c => ({ ...c, health: 33 })) });
     const next = unwrap(resolveRoundFourExit(state, "exit", "exterior-crack", () => 0));
-    expect(next.characters.map(c => c.health)).toEqual([0, 0, 28, 28]);
-    expect(next.roundFour.exit!.deceasedIds).toEqual(["maintenance", "medic"]);
-    expect(next.roundFour.exit!.escapedHumanIds).toEqual(["architect-engineer", "bellhop"]);
+    expect(next.characters.map(c => c.health)).toEqual([0, 0, 0, 28]);
+    expect(next.roundFour.exit!.deceasedIds).toEqual(["maintenance", "medic", "architect-engineer"]);
+    expect(next.roundFour.exit!.escapedHumanIds).toEqual(["bellhop"]);
   });
   it("projects no real probability or classification in availability", () => {
     const json = JSON.stringify(roundFourRouteAvailability(start()));
@@ -222,7 +223,7 @@ describe("route non-consensus consequences", () => {
     expect(resolveRoundFourExit(second, "exit", "revolving-door", () => 0.9)).toMatchObject({ ok: false, error: "forced-route-required" });
     const next = unwrap(resolveRoundFourExit(second, "exit", "exterior-crack", () => 0));
     expect(next.characters.map(c => c.energy)).toEqual([85, 85, 85, 85]);
-    expect(next.characters.map(c => c.health)).toEqual([65, 65, 95, 95]);
+    expect(next.characters.map(c => c.health)).toEqual([65, 65, 65, 95]);
     expect(next.roundFour.exit).toMatchObject({ energyCost: 15, forced: true, accident: true });
     expect(failRoundFourExitVote(next, "exit-vote", 2)).toEqual({ ok: true, state: next });
   });

@@ -1,8 +1,13 @@
-import { MOVEMENT_ENERGY } from "./energy-costs.js";
-import { payMovement, type MovementCharge, type TransportPlan } from "./transport.js";
+import { ACCIDENT_PROBABILITIES } from "./balance-probabilities.js";
+import { SHORING_SPECIALIST_ENERGY, MOVEMENT_ENERGY } from "./energy-costs.js";
+import { payMovement, type MovementCost, type MovementCharge, type TransportPlan } from "./transport.js";
 import { applyDamage, type OperationError } from "./operations.js";
 import { isAlive, type HumanRole, type SimulationState, type EngineState } from "./state.js";
 
+export function roundTwoMovementCost(id: string): MovementCost {
+ const base = MOVEMENT_ENERGY[id as "shoring" | "ventilation" | "unstable-corridor"];
+ return id === "shoring" ? { base, extraByRole: { maintenance: SHORING_SPECIALIST_ENERGY, "architect-engineer": SHORING_SPECIALIST_ENERGY } } : base;
+}
 export type RouteId = "unstable-corridor" | "ventilation" | "shoring";
 type Danger = "LOW" | "MODERATE" | "HIGH";
 interface RouteDefinition {
@@ -17,12 +22,12 @@ interface RouteDefinition {
 
 /** Catálogo exclusivo del backend. No serializar estas definiciones. */
 const routes: readonly RouteDefinition[] = [
-  { id: "unstable-corridor", name: "Pasillo principal inestable", energyCost: MOVEMENT_ENERGY["unstable-corridor"],
-    danger: "HIGH", accidentProbability: 0.35, accidentDamage: 20, specialists: [] },
+  { id: "unstable-corridor", name: "Pasillo principal", energyCost: MOVEMENT_ENERGY["unstable-corridor"],
+    danger: "HIGH", accidentProbability: ACCIDENT_PROBABILITIES.HIGH, accidentDamage: 20, specialists: [] },
   { id: "ventilation", name: "Conductos de ventilación", energyCost: MOVEMENT_ENERGY["ventilation"],
-    danger: "LOW", accidentProbability: 0.10, accidentDamage: 5, specialists: [] },
+    danger: "LOW", accidentProbability: ACCIDENT_PROBABILITIES.LOW, accidentDamage: 5, specialists: [] },
   { id: "shoring", name: "Despeje y apuntalamiento", energyCost: MOVEMENT_ENERGY["shoring"],
-    danger: "MODERATE", accidentProbability: 0.20, accidentDamage: 10,
+    danger: "MODERATE", accidentProbability: ACCIDENT_PROBABILITIES.MODERATE, accidentDamage: 10,
     specialists: ["architect-engineer", "maintenance"] },
 ];
 
@@ -34,7 +39,7 @@ export type RouteError = OperationError | "unknown-route" | "no-living-character
 export type RouteResult =
   | { readonly ok: false; readonly state: SimulationState; readonly error: RouteError }
   | { readonly ok: true; readonly state: SimulationState; readonly routeId: RouteId;
-      readonly accident: boolean; readonly victimIds: readonly string[] };
+      readonly accident: boolean; readonly victimIds: readonly string[]; readonly charges: readonly MovementCharge[] };
 
 /** Fuente obligatoria e inyectada: cada muestra debe pertenecer a [0, 1). */
 export type RandomSource = () => number;
@@ -56,11 +61,12 @@ export function traverseRoute(state: SimulationState, routeId: string, random: R
   const requirements = checkRouteRequirements(state, routeId);
   if (!requirements.ok) return { ok: false, state, error: requirements.error };
   const route = routes.find(entry => entry.id === routeId)!;
-  const result = traverseRouteEffects(state, { ...route, guaranteedDamage: options?.guaranteedDamage ?? 0 }, random, options?.transportPlan);
+  const result = traverseRouteEffects(state, { ...route, movementCost: roundTwoMovementCost(route.id), guaranteedDamage: options?.guaranteedDamage ?? 0 }, random, options?.transportPlan);
   return result.ok ? { ...result, routeId: route.id } : result;
 }
 
 export interface RouteEffects {
+  readonly movementCost?: MovementCost;
   readonly energyCost: number;
   readonly accidentProbability: number;
   readonly accidentDamage: number;
@@ -79,7 +85,15 @@ export type RouteEffectsResult<S extends EngineState = SimulationState> =
       readonly deceasedIds: readonly string[]; readonly charges: readonly MovementCharge[] };
 
 /** Mismo pago y accidente para los catálogos de backend. No exponer las definiciones al cliente. */
+export const MAX_ACCIDENT_VICTIMS = 3;
 export function traverseRouteEffects<S extends EngineState>(state: S, route: RouteEffects, random: RandomSource, plan?: TransportPlan): RouteEffectsResult<S> {
+  return traverseEffects(state, route, random, MAX_ACCIDENT_VICTIMS, plan);
+}
+/** Contrafactual estadístico del mismo motor. Ningún coordinador de partida usa este adaptador. */
+export function simulateRouteEffectsForAnalysis<S extends EngineState>(state:S, route:RouteEffects, random:RandomSource, victimLimit:2|3):RouteEffectsResult<S> {
+  return traverseEffects(state,route,random,victimLimit);
+}
+function traverseEffects<S extends EngineState>(state: S, route: RouteEffects, random: RandomSource, victimLimit:2|3, plan?: TransportPlan): RouteEffectsResult<S> {
   const reject = (error: RouteError): RouteEffectsResult<S> => ({ ok: false, error, state });
   if (!Number.isFinite(route.energyCost) || route.energyCost < 0
     || !Number.isFinite(route.accidentProbability) || route.accidentProbability < 0 || route.accidentProbability > 1
@@ -87,7 +101,7 @@ export function traverseRouteEffects<S extends EngineState>(state: S, route: Rou
     || !Number.isFinite(route.guaranteedDamage ?? 0) || (route.guaranteedDamage ?? 0) < 0) return reject("invalid-route-effects");
   const living = state.characters.filter(isAlive);
   if (!living.length) return reject("no-living-characters");
-  const payment = payMovement(state, route.energyCost, plan);
+  const payment = payMovement(state, route.movementCost ?? route.energyCost, plan);
   if (!payment.ok) return reject(payment.error);
   let next = payment.state;
   const roll = random();
@@ -97,7 +111,7 @@ export function traverseRouteEffects<S extends EngineState>(state: S, route: Rou
   const victimIds: string[] = [];
   if (accident) {
     const candidates = [...living];
-    for (let i = 0; i < Math.min(2, living.length); i++) {
+    for (let i = 0; i < Math.min(victimLimit, living.length); i++) {
       const sample = random();
       if (!valid(sample)) return reject("invalid-random");
       const [victim] = candidates.splice(Math.floor(sample * candidates.length), 1);
@@ -121,8 +135,13 @@ export function traverseRouteEffects<S extends EngineState>(state: S, route: Rou
 }
 
 /** DTOs locales de preparación; no se han añadido mensajes ni tipos al cliente. */
-export interface RouteView { id: RouteId; name: string; energyCost: number }
-const view = (route: RouteDefinition): RouteView => ({ id: route.id, name: route.name, energyCost: route.energyCost });
+export interface RouteView { id: RouteId; name: string; description: string; energyCost: number }
+const descriptions: Record<RouteId, string> = {
+  "unstable-corridor": "El pasillo atraviesa la zona de habitaciones. El techo agrietado y los muebles desplazados dejan un paso entre los escombros.",
+  ventilation: "Un acceso de servicio permite recorrer los conductos de ventilación hasta el otro lado del pasillo.",
+  shoring: "El equipo puede retirar obstáculos y apuntalar el paso. Requiere la participación activa de Mantenimiento y Arquitecto / Ingeniero.",
+};
+const view = (route: RouteDefinition): RouteView => ({ id: route.id, name: route.name, description: descriptions[route.id], energyCost: route.energyCost });
 
 // No publica la existencia de la ruta técnica conocida por Mantenimiento.
 export function publicRouteViews(): RouteView[] {

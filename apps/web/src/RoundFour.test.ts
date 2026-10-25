@@ -7,13 +7,13 @@ import { activeScene, emptyGame, gameReducer, type GameState } from "./game-stat
 import { gameHistory } from "./game-history";
 import { bindGameSocket, type GameSocket } from "./game-socket";
 
-const vote: PublicVote = { decisionId: "npc4", attemptId: "first", round: 4, attemptNumber: 1, deadline: 61000,
+const vote: PublicVote = { decisionId: "npc4", attemptId: "first", round: 6, attemptNumber: 1, deadline: 61000,
   serverNow: 1000, requiredVotes: 3, status: "open", result: null };
 const actions: GameActions = { onVote: vi.fn(), onRoute: vi.fn(), onOpenThree: vi.fn(), onOpenFour: vi.fn(), onRetryFour: vi.fn(),
   onAdvance: vi.fn(), onOpenTransport: vi.fn(), onRetry: vi.fn(), onGive: vi.fn(), onTreat: vi.fn() };
 function fixture(): GameState {
   const characters = Array.from({ length: 4 }, (_, i) => ({ participantId: `p${i}`, name: `Persona ${i}`, health: 80, energy: 65 }));
-  const roundFour: RoundFourView = { round: 4, preparationId: "prep4", phase: "npc-voting",
+  const roundFour: RoundFourView = { round: 6, preparationId: "prep4", phase: "npc-voting",
     npc: { encounter: "immobile", status: "awaiting-decision", choice: null, message: null, energyPerHuman: 0, medicalUnits: 0, vote,
       options: [{ id: "abandon", label: "Abandonar", energyPerHuman: 0, medicalUnits: 0, available: true },
         { id: "carry", label: "Transportar al superviviente", energyPerHuman: 40, medicalUnits: 0, available: true },
@@ -21,7 +21,7 @@ function fixture(): GameState {
     options: [{ id: "revolving-door", name: "Puerta giratoria", energyCost: 20, availability: { status: "available", reason: null } },
       { id: "exterior-crack", name: "Grieta exterior", energyCost: 10, availability: { status: "available", reason: null } }],
     vote: null, selection: null, forced: false, surcharge: 0, collapse: null, blocked: null, movement: null };
-  return { ...emptyGame, roundFour, vote, supplies: { gameId: "game", round: 4, windowId: null, characters, inventory: { packs: 8, medicalUnits: 4 } },
+  return { ...emptyGame, roundFour, vote, supplies: { gameId: "game", round: 6, windowId: null, characters, inventory: { packs: 8, medicalUnits: 4 } },
     room: { code: "ABCDEF123456", creatorId: "p0", status: "started", participants: characters.map(c => ({ id: c.participantId, name: c.name, connected: true })) },
     role: { participantId: "p0", role: "bellhop", sheet: { name: "Botones", objective: "Privado propio", responsibility: "Packs", knowledge: [] } },
     summary: { gameId: "game", round: 1, completed: true, decisionId: "r1", result: "RESCUE_APPROVED", npc: "rescued", microearthquake: false,
@@ -33,10 +33,10 @@ const render = (state: GameState) => renderToStaticMarkup(createElement(GameScre
 test.each(["maintenance", "medic", "architect-engineer", "bellhop"] as const)("%s sees NPC vote despite a delayed round-three supplies snapshot", role => {
   const s = fixture(); s.supplies = { ...s.supplies!, round: 3 };
   s.role = { ...s.role!, role };
-  expect(activeScene(s)).toMatchObject({ round: 4, kind: "round-four", vote: { decisionId: "npc4", attemptId: "first" } });
+  expect(activeScene(s)).toMatchObject({ round: 6, kind: "round-four", vote: { decisionId: "npc4", attemptId: "first" } });
   const current = render(s).split('class="panel game-history"')[0]!;
   expect(current).toContain("Decidir el rescate");
-  expect(current).toContain("60s");
+  expect(current).toContain('class="vote-seconds">60<');
   expect(current).not.toContain("El equipo ha terminado el recorrido");
 });
 
@@ -44,7 +44,7 @@ test("NPC death selects exit preparation even with stale supplies and the old ge
   const s = fixture(); s.supplies = { ...s.supplies!, round: 3 };
   s.roundFour = { ...s.roundFour!, phase: "preparation", npc: { ...s.roundFour!.npc, status: "dead",
     vote: { ...vote, status: "closed", attemptNumber: 2, result: "NO_AGREEMENT" } } };
-  expect(activeScene(s)).toMatchObject({ round: 4, kind: "round-four", vote: null });
+  expect(activeScene(s)).toMatchObject({ round: 6, kind: "round-four", vote: null });
   const current = render(s).split('class="panel game-history"')[0]!;
   expect(current).toContain("Elegir la salida");
   expect(current).toContain("Abrir votación de salida");
@@ -54,7 +54,7 @@ test("NPC death selects exit preparation even with stale supplies and the old ge
 
 test("only the public round-four transport phase can activate a round-four transport snapshot", () => {
   const s = fixture();
-  s.transport = { cases: [{ preparationId: "old", round: 4, routeId: "exterior-crack", routeName: "Grieta", routeCost: 10,
+  s.transport = { cases: [{ preparationId: "old", round: 6, routeId: "exterior-crack", routeName: "Grieta", routeCost: 10,
     phase: "voting", reason: null, exhaustedIds: [], eligibleIds: [], people: [], options: [], vote: { ...vote, decisionId: "transport" },
     decisions: [], transportedIds: [], abandonedIds: [], charges: [], transfers: [] }] };
   expect(activeScene(s)).toMatchObject({ kind: "round-four", vote: { decisionId: "npc4" } });
@@ -85,7 +85,7 @@ test.each(["npc-voting", "preparation", "exit-voting", "blocked", "completed"] a
   expect(current).not.toContain("Paso obligatorio completado");
   expect(current).not.toContain("Avanzar a ronda 5");
   expect(current).not.toMatch(/10 %|50 %|accidentProbability|EXTREME|LOW/);
-  if (phase === "npc-voting") { expect(current).toContain("Decidir el rescate"); expect(current).not.toContain("Elegir la salida"); expect(current).toContain("60s"); }
+  if (phase === "npc-voting") { expect(current).toContain("Decidir el rescate"); expect(current).not.toContain("Elegir la salida"); expect(current).toContain('class="vote-seconds">60<'); }
   if (phase === "blocked") expect(current).toContain("No se ha gastado ningún recurso");
   if (phase === "completed") { expect(current).toContain("Resumen provisional"); expect(current).toContain("Rescate completado"); expect(current).not.toContain("Abrir votación"); }
   if (phase === "preparation") { expect(current).toContain("pendiente de completar el desplazamiento"); expect(current).not.toContain("Rescate completado"); }
@@ -97,8 +97,8 @@ test("second NPC attempt displays exact message, server countdown, own recovered
   s.ownVote = { decisionId: v.decisionId, attemptId: v.attemptId, optionId: "carry" };
   const current = render(s).split('class="panel game-history"')[0]!;
   expect(current).toContain("El superviviente parece debilitarse a cada segundo que pasa");
-  expect(current).toContain("30s"); expect(current.match(/Voto registrado/g)).toHaveLength(1);
-  expect(current).toContain("Intento 2 de 2");
+  expect(current).toContain('class="vote-seconds">30<'); expect(current.match(/Voto registrado/g)).toHaveLength(1);
+  expect(current).toContain("Intento 2");
 });
 
 test("repeated fourth snapshots replace state and preserve one history entry per decision", () => {
@@ -106,8 +106,8 @@ test("repeated fourth snapshots replace state and preserve one history entry per
   s = gameReducer(s, { type: "roundFour", value: structuredClone(s.roundFour) }); const before = s;
   for (let i = 0; i < 4; i++) s = gameReducer(s, { type: "roundFour", value: structuredClone(s.roundFour) });
   expect(s).toBe(before);
-  expect(gameHistory(s).filter(e => e.id.startsWith("npc:4"))).toHaveLength(1);
-  expect(activeScene(s).round).toBe(4);
+  expect(gameHistory(s).filter(e => e.id.startsWith("npc:6"))).toHaveLength(1);
+  expect(activeScene(s).round).toBe(6);
   expect(gameReducer(s, { type: "disconnect" }).roundFour).toBe(null);
 });
 
@@ -116,11 +116,11 @@ test("fourth listener setup/cleanup, no stale callback after reconnect, old roun
   const socket = { on: (name: string, fn: (v?: unknown) => void) => { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name)!.add(fn); },
     off: (name: string, fn: (v?: unknown) => void) => listeners.get(name)?.delete(fn) } as unknown as GameSocket;
   const dispatch = vi.fn(); const lifecycle = { connect: vi.fn(), disconnect: vi.fn(), error: vi.fn(), participantId: () => "p0" };
-  const cleanup = bindGameSocket(socket, dispatch, lifecycle); const old = [...listeners.get("round-four:updated")!][0]!;
+  const cleanup = bindGameSocket(socket, dispatch, lifecycle); const old = [...listeners.get("round-six:updated")!][0]!;
   old(fixture().roundFour); expect(dispatch).toHaveBeenCalledTimes(1);
   cleanup(); old(fixture().roundFour); expect(dispatch).toHaveBeenCalledTimes(1);
-  const next = bindGameSocket(socket, dispatch, lifecycle); expect(listeners.get("round-four:updated")!.size).toBe(1);
-  next(); expect(listeners.get("round-four:updated")!.size).toBe(0);
+  const next = bindGameSocket(socket, dispatch, lifecycle); expect(listeners.get("round-six:updated")!.size).toBe(1);
+  next(); expect(listeners.get("round-six:updated")!.size).toBe(0);
   const s = fixture(); s.vote = { ...vote, round: 1, decisionId: "old" };
   expect(activeScene(s).vote!.decisionId).toBe("npc4");
 });

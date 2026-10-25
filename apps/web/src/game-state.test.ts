@@ -92,10 +92,10 @@ test("la ronda actual prevalece sobre snapshots antiguos y transportes completad
   expect(gameHistory(s).filter(e => e.id === "route:r1")).toHaveLength(1);
 });
 
-test("ficha propia desplegable, sin información privada de otros ni controles médicos ajenos", () => {
+test("ficha propia visible directamente, sin información privada de otros ni controles médicos ajenos", () => {
   const s = state(); const html = render(s);
-  expect(html).toContain("Objetivo privado propio"); expect(html).toContain("Consultar mi ficha privada");
-  expect(html).not.toMatch(/class="private-details"[^>]*open/);
+  expect(html).toContain("Objetivo privado propio"); expect(html).toContain("Capacidades y responsabilidad");
+  expect(html).not.toMatch(/<details class="private-details"/);
   expect(html).not.toContain("Administrar tratamiento");
   s.role = { ...s.role!, participantId: "other", sheet: { ...s.role!.sheet, objective: "Secreto ajeno" } };
   expect(render(s)).not.toContain("Secreto ajeno");

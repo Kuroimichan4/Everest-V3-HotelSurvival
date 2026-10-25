@@ -1,11 +1,13 @@
+
+const technicalExtra = (role: string, route: string) => route === "shoring" && (role === "maintenance" || role === "architect-engineer") ? 5 : 0;
 import { expect, test, vi } from "vitest";
 import { createInitialState, type SimulationState } from "./state.js";
 import { checkRouteRequirements, privateRouteViews, publicRouteViews, traverseRoute } from "./routes.js";
 
 const cases = [
-  ["unstable-corridor", 20, 0.35, 20],
-  ["ventilation", 30, 0.10, 5],
-  ["shoring", 40, 0.20, 10],
+  ["unstable-corridor", 20, 0.55, 20],
+  ["ventilation", 30, 0.20, 5],
+  ["shoring", 40, 0.35, 10],
 ] as const;
 
 test.each(cases)("%s: coste %i, umbral %f y daño %i", (route, cost, probability, damage) => {
@@ -19,24 +21,24 @@ test.each(cases)("%s: coste %i, umbral %f y daño %i", (route, cost, probability
   expect(safe.victimIds).toEqual([]);
   expect(noAccident).toHaveBeenCalledTimes(1);
   expect(safe.state.characters.map((character) => [character.health, character.energy]))
-    .toEqual(Array.from({ length: 4 }, () => [100, 100 - cost]));
+    .toEqual(state.characters.map(c => [100, 100 - cost - technicalExtra(c.role, route)]));
   const random = vi.fn().mockReturnValueOnce(probability - 0.000001).mockReturnValue(0);
   const hit = traverseRoute(state, route, random);
   expect(hit.ok).toBe(true);
   if (!hit.ok) throw new Error(hit.error);
   expect(hit.accident).toBe(true);
-  expect(random).toHaveBeenCalledTimes(3);
-  expect(hit.victimIds).toEqual(state.characters.slice(0, 2).map((character) => character.id));
-  expect(new Set(hit.victimIds).size).toBe(2);
-  expect(hit.state.characters.map((character) => character.health)).toEqual([100 - damage, 100 - damage, 100, 100]);
-  expect(hit.state.characters.every((character) => character.energy === 100 - cost)).toBe(true);
+  expect(random).toHaveBeenCalledTimes(4);
+  expect(hit.victimIds).toEqual(state.characters.slice(0, 3).map((character) => character.id));
+  expect(new Set(hit.victimIds).size).toBe(3);
+  expect(hit.state.characters.map((character) => character.health)).toEqual([100 - damage, 100 - damage, 100 - damage, 100]);
+  expect(hit.state.characters.every((character) => character.energy === 100 - cost - technicalExtra(character.role, route))).toBe(true);
   expect(hit.state.inventory).toEqual(state.inventory);
   expect(state).toEqual(snapshot);
 });
 
 test.each(cases)("%s permite pagar exactamente toda la energía", (route, energy) => {
   const initial = createInitialState();
-  const state = { ...initial, characters: initial.characters.map((character) => ({ ...character, energy })) };
+  const state = { ...initial, characters: initial.characters.map((character) => ({ ...character, energy: energy + technicalExtra(character.role, route) })) };
   const result = traverseRoute(state, route, () => 0.99);
   expect(result.ok).toBe(true);
   expect(result.state.characters.every((character) => character.energy === 0)).toBe(true);
@@ -66,12 +68,12 @@ test("con dos vivos ambos son víctimas; los fallecidos no pagan ni reciben dañ
     .toEqual([[0, 100], [95, 70], [0, 100], [95, 70]]);
 });
 
-test("con tres vivos se eligen dos vivos distintos incluso usando el extremo superior", () => {
+test("con tres vivos se eligen tres vivos distintos incluso usando el extremo superior", () => {
   const state = survivors([0, 2, 3]);
   const random = vi.fn().mockReturnValueOnce(0).mockReturnValue(0.999999);
   const result = traverseRoute(state, "unstable-corridor", random);
   expect(result.ok).toBe(true);
-  if (result.ok) expect(result.victimIds).toEqual([state.characters[3]!.id, state.characters[2]!.id]);
+  if (result.ok) expect(result.victimIds).toEqual([state.characters[3]!.id, state.characters[2]!.id, state.characters[0]!.id]);
 });
 
 test.each([[[], "no-living-characters"], [[0], "single-survivor-allowed"]] as const)("supervivientes %j: %s", (indices, error) => {
@@ -122,7 +124,7 @@ test("muerte por accidente queda pendiente sin aplicar costes ni daños", () => 
   const state = { ...initial, characters: initial.characters.map((character) => ({ ...character, health: 20 })) };
   const result = traverseRoute(state, "unstable-corridor", () => 0);
   expect(result.ok).toBe(true);
-  expect(result.state.characters.map(c => c.health)).toEqual([0, 0, 20, 20]);
+  expect(result.state.characters.map(c => c.health)).toEqual([0, 0, 0, 20]);
   expect(result.state.characters.every(c => c.energy === 80)).toBe(true);
   expect(state.characters.every(c => c.health === 20 && c.energy === 100)).toBe(true);
 });
@@ -143,7 +145,7 @@ test("vistas autorizadas no contienen riesgos internos y solo Mantenimiento cono
     const privateViews = privateRouteViews(role);
     expect(privateViews.map((route) => route.id)).toEqual(role === "maintenance" ? ["ventilation"] : []);
     for (const route of [...publicViews, ...privateViews]) {
-      expect(Object.keys(route).sort()).toEqual(["energyCost", "id", "name"]);
+      expect(Object.keys(route).sort()).toEqual(["description", "energyCost", "id", "name"]);
       expect(JSON.stringify(route)).not.toMatch(/LOW|MODERATE|HIGH|probability|damage|danger|0\.1/i);
     }
   }

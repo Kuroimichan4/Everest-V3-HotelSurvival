@@ -1,5 +1,5 @@
 import type { GameFinalResult, PrivateObjectiveEvidence } from "@everest/shared";
-import { isAlive, type SimulationState, type RouteRevelation } from "./state.js";
+import { isAlive, type SimulationState, type EngineState, type RouteRevelation } from "./state.js";
 import { internalRouteRisk, privateRouteViews } from "./routes.js";
 import { internalRoundThreeRisk } from "./round-three-routes.js";
 import { ROUND_FOUR_ROUTES, type RoundFourState } from "./round-four.js";
@@ -13,13 +13,13 @@ export interface EvidenceContext {
   ventilationRevealedBy?: string;
 }
 export interface RouteEvidence {
-  round: 1 | 2 | 3 | 4; routeId: string; resolutionId: string; completed: true;
+  round: 1 | 2 | 3 | 4 | 5 | 6; routeId: string; resolutionId: string; completed: true;
   realRisk: "LOW" | "MODERATE" | "HIGH" | "EXTREME" | null;
   forcedByNoAgreement: boolean | null;
 }
 
 /** Recibe metadatos de catálogo del servidor; no es una autorización de rutas nuevas. */
-export function recordMaintenanceRevelation<S extends SimulationState>(state: S, route: { id: string; round: RouteRevelation["round"]; initiallyPrivate: boolean }, characterId: string, sharedAt: number): S {
+export function recordMaintenanceRevelation<S extends EngineState>(state: S, route: { id: string; round: RouteRevelation["round"]; initiallyPrivate: boolean }, characterId: string, sharedAt: number): S {
   const actor = state.characters.find(c => c.id === characterId);
   if (!actor || !isAlive(actor) || actor.role !== "maintenance" || !route.initiallyPrivate || route.round !== state.currentRound
     || !Number.isFinite(sharedAt) || sharedAt < 0 || state.routeRevelations?.some(r => r.routeId === route.id)) return state;
@@ -31,8 +31,8 @@ export interface PatientEvidence {
   diedAfterTreatment: boolean; abandoned: boolean; evacuated: boolean;
 }
 export interface NpcEvidence {
-  id: "round-one-survivor" | "round-two-survivor" | "round-four-survivor";
-  round: 1 | 2 | 4; appeared: boolean | null; found: boolean;
+  id: "round-one-survivor" | "round-two-survivor" | "round-six-survivor";
+  round: 1 | 2 | 6; appeared: boolean | null; found: boolean;
   rescueApproved: boolean; rescued: boolean; abandoned: boolean; deceased: boolean;
   evacuated: boolean | null;
   medicalUnitsUsed: number;
@@ -41,6 +41,7 @@ export interface NpcEvidence {
 export interface ObjectiveLedger {
   gameId: string; resultId: string;
   routes: RouteEvidence[]; patients: PatientEvidence[]; npcs: NpcEvidence[];
+  sabotage?: { actorParticipantId: string; manipulated: boolean; victimId: string | null };
   maintenance: {
     knownRoutes: string[];
     revelations: { routeId: string; characterId: string | null; round?: RouteRevelation["round"]; initiallyUnknownToOthers?: boolean; sharedAt?: number }[];
@@ -50,7 +51,7 @@ export interface ObjectiveLedger {
   };
 }
 
-export function collectObjectiveLedger(state: SimulationState, result: GameFinalResult, context: EvidenceContext = {}): ObjectiveLedger {
+export function collectObjectiveLedger(state: EngineState, result: GameFinalResult, context: EvidenceContext = {}): ObjectiveLedger {
   const publicPerson = (characterId: string) => {
     const character = state.characters.find(c => c.id === characterId)!;
     return result.humans.find(p => p.role === character.role)!;
@@ -64,10 +65,14 @@ export function collectObjectiveLedger(state: SimulationState, result: GameFinal
   const third = state.roundThreeRoute;
   if (third?.status === "completed") routes.push({ round: 3, routeId: third.outcome.routeId, resolutionId: third.outcome.requestId,
     completed: true, realRisk: internalRoundThreeRisk(third.outcome.routeId), forcedByNoAgreement: context.roundThreeForced ?? null });
-  const fourth = state.currentRound === 4 && "roundFour" in state ? (state as RoundFourState).roundFour : undefined;
+  const fourth = state.currentRound === 6 && "roundFour" in state ? (state as RoundFourState).roundFour : undefined;
   const exit = fourth?.exit;
-  if (exit) routes.push({ round: 4, routeId: exit.routeId, resolutionId: exit.requestId, completed: true,
+  if (exit) routes.push({ round: 6, routeId: exit.routeId, resolutionId: exit.requestId, completed: true,
     realRisk: ROUND_FOUR_ROUTES[exit.routeId].danger, forcedByNoAgreement: exit.forced });
+  for (const record of state.intermediateRounds ?? []) {
+    if (record.status === "completed") routes.push({ round: record.round, routeId: record.routeId, resolutionId: record.requestId, completed: true, realRisk: record.realRisk, forcedByNoAgreement: record.forcedByNoAgreement ?? false });
+  }
+  routes.sort((a, b) => a.round - b.round);
   const patients = new Map<string, PatientEvidence>();
   for (const t of state.medicalTreatments ?? []) {
     const person = publicPerson(t.characterId); const human = state.characters.find(c => c.id === t.characterId)!;
@@ -87,12 +92,12 @@ export function collectObjectiveLedger(state: SimulationState, result: GameFinal
     const first = state.roundOne; const second = state.roundTwo?.resolution;
     const decision = npc.round === 1 ? first?.result ?? state.roundOnePreparation?.result
       : npc.round === 2 ? second?.result : fourth?.npc.decision?.choice;
-    return { id: npc.round === 1 ? "round-one-survivor" : npc.round === 2 ? "round-two-survivor" : "round-four-survivor",
+    return { id: npc.round === 1 ? "round-one-survivor" : npc.round === 2 ? "round-two-survivor" : "round-six-survivor",
       round: npc.round, appeared: npc.status === "not-encountered" ? null : npc.status !== "absent",
       found: npc.status !== "not-encountered" && npc.status !== "absent",
       rescueApproved: decision === "RESCUE_APPROVED" || decision === "assist" || decision === "carry" || decision === "medical-assist",
       rescued: npc.status === "rescued", abandoned: npc.status === "abandoned", deceased: npc.status === "dead", evacuated: npc.evacuated,
-      medicalUnitsUsed: npc.round === 4 ? fourth?.npc.rescue?.medicalUnits ?? 0 : 0 };
+      medicalUnitsUsed: npc.round === 6 ? fourth?.npc.rescue?.medicalUnits ?? 0 : 0 };
   });
   const revelations = new Map<string, ObjectiveLedger["maintenance"]["revelations"][number]>();
   for (const r of state.routeRevelations ?? []) {
@@ -100,6 +105,7 @@ export function collectObjectiveLedger(state: SimulationState, result: GameFinal
   }
   if ((context.ventilationRevealed || context.ventilationRevealedBy) && !revelations.has("ventilation")) revelations.set("ventilation", { routeId: "ventilation", characterId: context.ventilationRevealedBy ?? null });
   return { gameId: result.gameId, resultId: result.id, routes, patients: [...patients.values()], npcs,
+    ...(state.medicalSabotage ? { sabotage: { actorParticipantId: publicPerson(state.medicalSabotage.actorId).participantId, manipulated: true, victimId: state.medicalSabotage.status === "consumed" && state.medicalSabotage.victimId ? publicPerson(state.medicalSabotage.victimId).participantId : null } } : {}),
     maintenance: { knownRoutes: privateRouteViews("maintenance").map(route => route.id), revelations: [...revelations.values()],
       openings: [], openingRecordsComplete: false } };
 }
@@ -116,14 +122,11 @@ export function assessObjective(role: SimulationState["characters"][number]["rol
   }
   if (role === "architect-engineer") {
     if (ledger.routes.some(r => r.realRisk === "EXTREME")) return "unfulfilled";
-    const completeTrajectory = [1, 2, 3, 4].every(round => ledger.routes.some(r => r.round === round));
-    return completeTrajectory && ledger.routes.every(r => r.realRisk !== null) ? "fulfilled" : "pending-evaluation";
+    const completeTrajectory = [1, 2, 3, 4, 5, 6].every(round => ledger.routes.some(r => r.round === round));
+    // Round one has no structural classification; do not invent one or require it.
+    return completeTrajectory && ledger.routes.every(r => r.round === 1 || r.realRisk !== null) ? "fulfilled" : "pending-evaluation";
   }
-  const survived = ledger.npcs.filter(n => n.rescued && n.evacuated === true).length;
-  if (survived >= 2) return "fulfilled";
-  // Un rescate histórico sin desenlace confirmado no equivale a supervivencia ni fallecimiento.
-  const unknown = ledger.npcs.some(n => n.appeared === null || (n.found && !n.deceased && n.evacuated !== true));
-  return unknown ? "pending-evaluation" : "unfulfilled";
+  return ledger.sabotage?.actorParticipantId === participantId && ledger.sabotage.victimId ? "fulfilled" : "unfulfilled";
 }
 
 export function projectObjectiveEvidence(state: SimulationState, result: GameFinalResult, characterId: string, ledger: ObjectiveLedger): PrivateObjectiveEvidence {
@@ -135,7 +138,7 @@ export function projectObjectiveEvidence(state: SimulationState, result: GameFin
     confirmed = shared.length > 0;
     facts.push(`Rutas alternativas inicialmente desconocidas reveladas por tu personaje: ${shared.length}.`);
     for (const r of shared) facts.push(`${r.routeId}: compartida en ronda ${r.round}; registro de servidor ${r.sharedAt}.`);
-    if (shared.length < 2) missing.push("Todavía no constan dos revelaciones verificadas. Las nuevas oportunidades de las rondas futuras no están implementadas.");
+    if (shared.length < 2) missing.push("Todavía no constan dos revelaciones verificadas. Se requieren dos rutas diferentes con autoría verificada.");
   } else if (human.role === "medic") {
     const mine = ledger.patients.filter(p => p.treatments.some(t => t.administratorId === person.participantId));
     // Sin recibos históricos se informa el tratamiento, dejando explícita la falta de autoría.
@@ -150,13 +153,13 @@ export function projectObjectiveEvidence(state: SimulationState, result: GameFin
     if (mine.some(p => p.abandoned && !p.diedAfterTreatment)) missing.push("La supervivencia de pacientes abandonados no está confirmada.");
   } else if (human.role === "architect-engineer") {
     for (const r of ledger.routes) facts.push(`Ronda ${r.round}: recorrido completado por ${r.routeId === "exterior-crack" ? "grieta exterior" : r.routeId === "pipe-gallery" ? "galería de tuberías y calderas" : r.routeId}; ${r.forcedByNoAgreement === true ? "obligatorio por falta de acuerdo" : r.forcedByNoAgreement === false ? "sin imposición por falta de acuerdo" : "origen de la elección no registrado"}.${r.realRisk === "EXTREME" ? " Riesgo extremo confirmado." : ""}`);
-    confirmed = ledger.routes.some(r => r.realRisk === "EXTREME");
-    if (ledger.routes.some(r => r.realRisk === null)) missing.push("Algún recorrido no tiene una categoría estructural explícita en el motor (ronda 1).");
-    if (ledger.routes.length < 4) missing.push("No se completó el itinerario de las cuatro rondas.");
+    confirmed = evaluation !== "pending-evaluation";
+    if (ledger.routes.some(r => r.round !== 1 && r.realRisk === null)) missing.push("Algún recorrido clasificado no tiene su categoría estructural registrada.");
+    if (ledger.routes.length < 6) missing.push("No se completó el itinerario de las seis rondas.");
   } else {
-    for (const n of ledger.npcs) facts.push(`NPC de ronda ${n.round}: ${n.rescued ? "rescate completado" : n.rescueApproved ? "rescate aprobado sin completar" : n.deceased ? "fallecido" : n.abandoned ? "abandonado" : n.appeared === false ? "no apareció" : n.found ? "encontrado" : "encuentro no alcanzado"}; ${n.evacuated === true ? "evacuación confirmada" : "supervivencia posterior no confirmada"}.`);
-    confirmed = ledger.npcs.some(n => n.rescued);
-    if (evaluation === "pending-evaluation") missing.push("Los NPC de rondas anteriores no tienen registrada su llegada a la calle ni un desenlace posterior; rescatarlos no confirma su supervivencia final.");
+    confirmed = evaluation === "fulfilled";
+    facts.push(ledger.sabotage?.actorParticipantId === person.participantId ? "Manipulación de medicación realizada." : "No consta manipulación de medicación.");
+    facts.push(confirmed ? "Una muerte humana causada por tu sabotaje está confirmada." : "No consta ninguna muerte humana causada por tu sabotaje.");
   }
   return { gameId: result.gameId, resultId: result.id, participantId: person.participantId, objective: characterSheet(human.role).objective,
     evaluation, evidenceState: confirmed ? "confirmed" : "insufficient", facts, missing };

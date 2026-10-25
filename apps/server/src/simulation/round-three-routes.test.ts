@@ -7,9 +7,9 @@ import { resolveRoundTwoMovement } from "./round-two-movement.js";
 import { privateRoundThreeKnowledge, publicRoundThreeRouteViews, resolveRoundThreeRoute, roundThreeExplorationView } from "./round-three-routes.js";
 
 const routes = [
-  ["fire-door", 30, 0.2, 10, 0],
-  ["pipe-gallery", 20, 0.5, 30, 20],
-  ["metal-debris", 40, 0.2, 10, 0],
+  ["fire-door", 30, 0.35, 10, 0],
+  ["pipe-gallery", 20, 0.7, 30, 20],
+  ["metal-debris", 40, 0.35, 10, 0],
 ] as const;
 
 test.each(routes)("%s: coste %i, umbral %f, accidente %i y ambiente %i", (route, cost, probability, damage, environment) => {
@@ -21,12 +21,12 @@ test.each(routes)("%s: coste %i, umbral %f, accidente %i y ambiente %i", (route,
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error);
     expect(result.state.characters.map(c => c.energy)).toEqual(Array(4).fill(100 - cost));
-    expect(result.state.characters.map(c => c.health)).toEqual([100 - environment - (accident ? damage : 0), 100 - environment - (accident ? damage : 0), 100 - environment, 100 - environment]);
+    expect(result.state.characters.map(c => c.health)).toEqual([100 - environment - (accident ? damage : 0), 100 - environment - (accident ? damage : 0), 100 - environment - (accident ? damage : 0), 100 - environment]);
     expect(result.outcome.accident).toBe(accident);
-    expect(result.outcome.victimIds).toEqual(accident ? state.characters.slice(0, 2).map(c => c.id) : []);
-    expect(new Set(result.outcome.victimIds).size).toBe(accident ? 2 : 0);
+    expect(result.outcome.victimIds).toEqual(accident ? state.characters.slice(0, 3).map(c => c.id) : []);
+    expect(new Set(result.outcome.victimIds).size).toBe(accident ? 3 : 0);
     expect(result.outcome.environmentalVictimIds).toEqual(environment ? state.characters.map(c => c.id) : []);
-    expect(random).toHaveBeenCalledTimes((accident ? 3 : 1) + (route === "metal-debris" ? 1 : 0));
+    expect(random).toHaveBeenCalledTimes((accident ? 4 : 1) + (route === "metal-debris" ? 1 : 0));
     expect(state).toEqual(snapshot);
     expect(result.state.currentRound).toBe(state.currentRound); // No hay transición de ronda en esta primitiva.
   }
@@ -43,8 +43,8 @@ test("puerta: pérdida garantizada y dos unidades, sin daño del temblor ni mues
     expect(result.state.inventory).toEqual({ packs: 8, medicalUnits: 6 });
     expect(result.outcome).toMatchObject({ crowbarLost: true, returnBlocked: true,
       discovery: "medical-conference-room", environmentalDamage: 0, gained: { packs: 0, medicalUnits: 2 } });
-    expect(result.state.characters.map(c => c.health)).toEqual(sample === 0 ? [90, 90, 100, 100] : [100, 100, 100, 100]);
-    expect(random).toHaveBeenCalledTimes(sample === 0 ? 3 : 1);
+    expect(result.state.characters.map(c => c.health)).toEqual(sample === 0 ? [90, 90, 90, 100] : [100, 100, 100, 100]);
+    expect(random).toHaveBeenCalledTimes(sample === 0 ? 4 : 1);
   }
 });
 
@@ -62,14 +62,14 @@ test.each([[0, 4], [0.699999999, 4], [0.7, 8], [0.999999999, 8]])("almacén: mue
 });
 
 test("accidente y recompensa del almacén usan muestras independientes", () => {
-  const samples = [0.19999, 0.99, 0.99, 0.7];
+  const samples = [0.19999, 0.99, 0.99, 0.99, 0.7];
   const random = vi.fn(() => samples.shift()!);
   const result = resolveRoundThreeRoute(createInitialState(), "r3", "metal-debris", random);
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.error);
-  expect(result.outcome.victimIds).toEqual(["bellhop", "architect-engineer"]);
+  expect(result.outcome.victimIds).toEqual(["bellhop", "architect-engineer", "medic"]);
   expect(result.outcome.gained.packs).toBe(8);
-  expect(random).toHaveBeenCalledTimes(4);
+  expect(random).toHaveBeenCalledTimes(5);
 });
 
 test.each(routes)("%s: una resolución, sin repetir pagos, daños, tiradas o recompensas", route => {
@@ -145,15 +145,15 @@ test.each([0, 1])("con %i humanos vivos el caso queda bloqueado antes de pagar o
   }
 });
 
-test.each([2, 3])("con %i humanos vivos se seleccionan dos distintos y solo pagan los vivos", living => {
+test.each([2, 3])("con %i humanos vivos se seleccionan hasta tres distintos y solo pagan los vivos", living => {
   const initial = createInitialState();
   const state = { ...initial, characters: initial.characters.map((c, i) => ({ ...c, health: i < living ? 100 : 0 })) };
   const result = resolveRoundThreeRoute(state, "r3", "pipe-gallery", () => 0);
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.error);
-  expect(result.outcome.victimIds).toEqual(initial.characters.slice(0, 2).map(c => c.id));
+  expect(result.outcome.victimIds).toEqual(initial.characters.slice(0, Math.min(3, living)).map(c => c.id));
   expect(result.outcome.environmentalVictimIds).toHaveLength(living);
-  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual(initial.characters.map((_, i) => [i < 2 ? 50 : i < living ? 80 : 0, i < living ? 80 : 100]));
+  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual(initial.characters.map((_, i) => [i < Math.min(3, living) ? 50 : i < living ? 80 : 0, i < living ? 80 : 100]));
 });
 
 test.each([20, 30, 50])("8A: danos acumulados mortales con salud %i se confirman juntos", health => {
@@ -161,7 +161,7 @@ test.each([20, 30, 50])("8A: danos acumulados mortales con salud %i se confirman
   const state = { ...initial, characters: initial.characters.map(c => ({ ...c, health })) };
   const result = resolveRoundThreeRoute(state, "r3", "pipe-gallery", () => 0);
   expect(result.ok).toBe(true);
-  expect(result.state.characters.map(c => c.health)).toEqual([0, 0, Math.max(0, health - 20), Math.max(0, health - 20)]);
+  expect(result.state.characters.map(c => c.health)).toEqual([0, 0, 0, Math.max(0, health - 20)]);
   expect(result.state.roundThreeRoute?.status).toBe("completed");
   expect(state.characters.every(c => c.health === health)).toBe(true);
 });
@@ -169,7 +169,7 @@ test.each([20, 30, 50])("8A: danos acumulados mortales con salud %i se confirman
 test.each([NaN, Infinity, -0.1, 1])("muestra inválida %s: también revierte si falla el premio tras pagar y tirar", sample => {
   const state = createInitialState();
   for (const random of [vi.fn(() => sample), vi.fn().mockReturnValueOnce(0.99).mockReturnValue(sample),
-    vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(sample)]) {
+    vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(sample)]) {
     expectBlocked(state, "metal-debris", "invalid-random", random);
   }
 });
@@ -185,7 +185,7 @@ test("vistas públicas sin destinos, premios, probabilidades ni conocimientos de
   const views = publicRoundThreeRouteViews();
   expect(views.map(route => route.id)).toEqual(["fire-door", "pipe-gallery", "metal-debris"]);
   expect(roundThreeExplorationView(createInitialState())).toBeNull();
-  for (const route of views) expect(Object.keys(route).sort()).toEqual(["energyCost", "id", "name"]);
+  for (const route of views) expect(Object.keys(route).sort()).toEqual(["description", "energyCost", "id", "name"]);
   expect(JSON.stringify(views)).not.toMatch(/conference|warehouse|almacén|conferencias|gained|reward|probability|danger|0\.2|0\.5|0\.7/i);
   for (const role of ["maintenance", "medic", "architect-engineer", "bellhop"] as const) {
     const privateView = privateRoundThreeKnowledge(role);

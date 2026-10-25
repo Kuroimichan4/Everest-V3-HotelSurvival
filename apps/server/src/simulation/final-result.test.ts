@@ -1,3 +1,4 @@
+import { beforeFinalFixture } from "../../test-support/final-stage.js";
 import { expect, test } from "vitest";
 import { createInitialState, type SimulationState } from "./state.js";
 import { resolveRoundOne } from "./round-one.js";
@@ -14,7 +15,7 @@ function ready(roll = 0) {
   const second = resolveRoundTwo(beginRoundTwo(first.state), "npc2", "RESCUE_APPROVED"); if (!second.ok) throw new Error(second.error);
   const third = resolveRoundThreeRoute({ ...second.state, currentRound: 3, characters: second.state.characters.map(c => ({ ...c, energy: 100 })) }, "r3", "metal-debris", () => 0.99);
   if (!third.ok) throw new Error(third.error);
-  const next = beginRoundFour(third.state, () => roll); if (!next.ok) throw new Error(next.error); return next.state;
+  const next = beginRoundFour(beforeFinalFixture(third.state), () => roll); if (!next.ok) throw new Error(next.error); return next.state;
 }
 function exit(state: RoundFourState) { const next = resolveRoundFourExit(state, "exit", "exterior-crack", () => 0.99); if (!next.ok) throw new Error(next.error); return next.state; }
 
@@ -65,7 +66,7 @@ test.each([[0, "absent"], [0.6, "abandoned"], [0.9, "dead"]] as const)("NPC outc
 test("NPC rescues are unique by encounter; previous rescued companions evacuate with the group", () => {
   const initial = ready(0.9); const selected = decideRoundFourNpc(initial, "npc", "medical-assist"); if (!selected.ok) throw new Error(selected.error);
   const final = result(exit(selected.state))!;
-  expect(final.npcs).toEqual([{ round: 1, status: "rescued", evacuated: true }, { round: 2, status: "rescued", evacuated: true }, { round: 4, status: "rescued", evacuated: true }]);
+  expect(final.npcs).toEqual([{ round: 1, status: "rescued", evacuated: true }, { round: 2, status: "rescued", evacuated: true }, { round: 6, status: "rescued", evacuated: true }]);
   expect(final.counts.rescuedNpcs).toBe(3); expect(final.counts.evacuatedNpcs).toBe(3);
   expect(new Set(final.npcs.map(n => n.round)).size).toBe(3);
 });

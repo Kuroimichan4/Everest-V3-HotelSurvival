@@ -121,8 +121,8 @@ try {
   for (const i of [0, 1, 2]) await click(i, "Votar Rescatar");
   await until(() => evaluate(0, `document.querySelector('[data-panel=action]').textContent.includes('Abrir votación de ruta')`), "preparación 2");
   await click(0, "Abrir votación de ruta");
-  await until(() => evaluate(0, `document.querySelector('[data-panel=action]').textContent.includes('Votar Pasillo principal inestable')`), "voto ruta 2");
-  for (const i of [0, 1, 2]) await click(i, "Votar Pasillo principal inestable");
+  await until(() => evaluate(0, `document.querySelector('[data-panel=action]').textContent.includes('Votar Pasillo principal')`), "voto ruta 2");
+  for (const i of [0, 1, 2]) await click(i, "Votar Pasillo principal");
   await until(() => evaluate(0, `document.querySelector('[data-panel=action]').textContent.includes('Avanzar a ronda 3')`), "ruta 2 completada");
   await click(0, "Avanzar a ronda 3");
   await until(() => evaluate(0, `document.querySelector('.phase-label').textContent==='Preparación de ruta'`), "preparación 3");

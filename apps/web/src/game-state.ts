@@ -1,14 +1,15 @@
-import type { GameActivityView, MedicalView, OwnVote, PrivateRole, PublicRoom, PublicVote, RoundOneSummary, RoundTwoView, RoundThreeView, RoundFourView, SuppliesView, TransportView } from "@everest/shared";
+import type { IntermediateRoundView, GameActivityView, MedicalView, OwnVote, PrivateRole, PublicRoom, PublicVote, RoundOneSummary, RoundTwoView, RoundThreeView, RoundFourView, SuppliesView, TransportView } from "@everest/shared";
 import type { GameFinalResult, PrivateObjectiveEvidence } from "@everest/shared";
 
 export interface GameState {
   final: GameFinalResult | null; objective: PrivateObjectiveEvidence | null;
   room: PublicRoom | null; role: PrivateRole | null; vote: PublicVote | null; ownVote: OwnVote | null;
   roundFour: RoundFourView | null;
+  intermediates: IntermediateRoundView[];
   summary: RoundOneSummary | null; roundTwo: RoundTwoView | null; roundThree: RoundThreeView | null;
   supplies: SuppliesView | null; medical: MedicalView | null; transport: TransportView | null; activity: GameActivityView | null;
 }
-export const emptyGame: GameState = { final: null, objective: null, room: null, role: null, vote: null, ownVote: null, roundFour: null, summary: null, roundTwo: null, roundThree: null, supplies: null, medical: null, transport: null, activity: null };
+export const emptyGame: GameState = { intermediates: [], final: null, objective: null, room: null, role: null, vote: null, ownVote: null, roundFour: null, summary: null, roundTwo: null, roundThree: null, supplies: null, medical: null, transport: null, activity: null };
 export type GameUpdate = { [K in keyof GameState]: { type: K; value: GameState[K] } }[keyof GameState] | { type: "disconnect" } | { type: "clear" };
 
 export function activeHuman(c: { health?: number; status?: string; eliminated?: boolean }) {
@@ -24,22 +25,23 @@ export function gameReducer(state: GameState, action: GameUpdate): GameState {
 }
 
 export function activeScene(state: GameState) {
-  // La fase autoritativa de ronda 4 prevalece sobre instantáneas auxiliares atrasadas.
-  const round = state.roundFour?.round ?? state.supplies?.round ?? state.roundThree?.round ?? state.roundTwo?.round ?? 1;
+  // La etapa autoritativa vigente prevalece sobre instantáneas auxiliares atrasadas.
+  const round = Math.max(state.roundFour?.round ?? 1, state.intermediates.at(-1)?.round ?? 1, state.supplies?.round ?? 1, state.roundThree?.round ?? 1, state.roundTwo?.round ?? 1);
+  const intermediate = state.intermediates.find(s => s.round === round);
   const transport = state.transport?.cases.findLast(c => c.round === round && c.phase !== "superseded");
   const recovery = round === 3 ? state.roundThree?.recovery : round === 2 ? state.roundTwo?.recovery : undefined;
-  const completed = round === 4 ? state.roundFour?.phase === "completed" : round === 3 ? state.roundThree?.phase === "completed" : round === 2 ? state.roundTwo?.phase === "completed" : !!state.summary;
-  const transportActive = transport && transport.phase !== "completed"
-    && (round !== 4 || (state.roundFour?.phase === "transport" && transport.phase !== "blocked"));
+  const completed = state.supplies?.sectorEvacuation?.round === round || intermediate?.phase === "sector-evacuated" || (round === 2 && state.roundTwo?.phase === "sector-evacuated") || (round === 3 && state.roundThree?.phase === "sector-evacuated") || (intermediate ? intermediate.phase === "completed" : round === 6 ? state.roundFour?.phase === "completed" : round === 3 ? state.roundThree?.phase === "completed" : round === 2 ? state.roundTwo?.phase === "completed" : !!state.summary);
+  const transportActive = transport && transport.phase !== "completed" && transport.phase !== "sector-evacuated"
+    && (round !== 6 || (state.roundFour?.phase === "transport" && transport.phase !== "blocked"));
   const kind = recovery ? "recovery" : completed ? "completed" : transportActive ? "transport"
-    : round === 4 ? "round-four" : round === 3 ? "route-three" : round === 2 && state.roundTwo?.phase !== "rescue-vote" ? "route-two"
+    : intermediate ? "intermediate" : round === 6 ? "round-four" : round === 3 ? "route-three" : round === 2 && state.roundTwo?.phase !== "rescue-vote" ? "route-two"
     : state.vote?.status === "open" ? "rescue" : "waiting";
-  const vote = kind === "round-four" ? state.roundFour?.phase === "npc-voting" ? state.roundFour.npc.vote : state.roundFour?.vote : kind === "transport" ? transport?.vote : kind === "route-three" ? state.roundThree?.vote
+  const vote = kind === "intermediate" ? intermediate?.vote : kind === "round-four" ? state.roundFour?.phase === "npc-voting" ? state.roundFour.npc.vote : state.roundFour?.vote : kind === "transport" ? transport?.vote : kind === "route-three" ? state.roundThree?.vote
     : kind === "route-two" ? state.roundTwo?.routeChoice?.vote : kind === "rescue" ? state.vote : null;
-  const phase = round === 4 && kind === "completed" ? "Evacuación completada" : kind === "round-four" ? state.roundFour?.phase === "npc-voting" ? "Rescate del superviviente" : state.roundFour?.phase === "blocked" ? "Salida pendiente" : vote?.status === "open" ? "Votación de salida" : "Preparar salida" : kind === "recovery" ? "Ruta pendiente" : kind === "completed" ? "Recorrido completado"
-    : kind === "transport" ? transport?.phase === "selection" ? "Elegir compañero" : transport?.phase === "voting" ? "Votación de transporte" : transport?.phase === "preparation" ? "Preparar transporte" : "Transporte pendiente"
+  const phase = intermediate?.phase === "movement" ? "Preparar desplazamiento" : round === 6 && kind === "completed" ? "Evacuación completada" : kind === "round-four" ? state.roundFour?.phase === "npc-voting" ? "Rescate del superviviente" : state.roundFour?.phase === "blocked" ? "Salida pendiente" : vote?.status === "open" ? "Votación de salida" : "Preparar salida" : kind === "recovery" ? "Ruta pendiente" : kind === "completed" ? "Recorrido completado"
+    : kind === "transport" ? transport?.phase === "selection" ? "Elegir compañero" : transport?.phase === "voting" ? transport.vote?.attemptNumber === 3 ? "Decisión extraordinaria de transporte" : "Votación de transporte" : transport?.phase === "preparation" ? "Preparar transporte" : "Transporte pendiente"
     : kind === "rescue" ? "Rescate de superviviente" : vote?.status === "open" ? "Votación de ruta"
-    : kind === "route-three" || kind === "route-two" ? "Preparación de ruta" : "Esperando al servidor";
+    : kind === "intermediate" || kind === "route-three" || kind === "route-two" ? "Preparación de ruta" : "Esperando al servidor";
   return { round, kind, phase, transport, vote: vote?.status === "open" ? vote : null };
 }
 
@@ -55,6 +57,8 @@ export function reasonLabel(reason: string) {
     "no-medical-units": "No quedan unidades médicas disponibles.",
     "supplies-not-open": "Los recursos no están disponibles durante esta decisión o después de la evacuación.",
     "transport-vote-pending": "Hay compañeros que necesitan transporte. Prepara el equipo antes de continuar.",
+    "no-eligible-voters-after-gas": "Tras la fuga no quedan votantes autorizados para resolver el transporte. El servidor conserva el estado sin inventar una decisión.",
+    "sector-evacuated-after-explosion": "El sector se ha evacuado tras la explosión.",
     "transport-no-agreement": "No hubo mayoría tras los dos intentos. El desplazamiento sigue pendiente.",
     "more-than-two-exhausted": "Hay más de dos compañeros agotados. Este caso sigue pendiente de definición.",
     "no-eligible-carriers": "No hay porteadores con energía suficiente.",

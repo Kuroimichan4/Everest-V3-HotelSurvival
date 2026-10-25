@@ -1,3 +1,4 @@
+import { completeIntermediateFixture } from "../../test-support/final-stage.js";
 import { expect, test, vi } from "vitest";
 import { io, type Socket } from "socket.io-client";
 import type { ClientToServerEvents, ServerToClientEvents, RoundFourView, RoomSession } from "@everest/shared";
@@ -57,17 +58,18 @@ test("NPC inaction broadcasts one transition to all four real client reducers, i
     const attach = (client: Client, i: number) => {
       const cleanup = bindGameSocket(client, action => {
         // Modelar recepción retrasada: tres clientes conservan el snapshot auxiliar de R3.
-        if (i > 0 && action.type === "supplies" && action.value?.round === 4) return;
+        if (i > 0 && action.type === "supplies" && action.value?.round === 6) return;
         states[i] = gameReducer(states[i]!, action);
       }, { participantId: () => sessions[i]!.credential.participantId, connect: () => {}, disconnect: () => {}, error: () => {} });
       const listener = (view: RoundFourView) => { views[i]!.push(view); };
-      client.on("round-four:updated", listener);
-      const unbind = () => { cleanup(); client.off("round-four:updated", listener); };
+      client.on("round-six:updated", listener);
+      const unbind = () => { cleanup(); client.off("round-six:updated", listener); };
       cleanups.push(unbind); return unbind;
     };
     let hostCleanup = attach(clients[0]!, 0); for (let i = 1; i < 4; i++) attach(clients[i]!, i);
+    completeIntermediateFixture(manager, code, clients[0]!.id!, clients.map(c => c.id!));
     random.mockReturnValue(0.6);
-    expect((await clients[0]!.timeout(3000).emitWithAck("round-four:advance")).ok).toBe(true);
+    expect((await clients[0]!.timeout(3000).emitWithAck("round-six:advance")).ok).toBe(true);
     random.mockReturnValue(0.99);
     await vi.waitFor(() => expect(views.map(a => a.length)).toEqual([1, 1, 1, 1]));
     const npcVote = manager.publicVote(code)!;
@@ -83,7 +85,7 @@ test("NPC inaction broadcasts one transition to all four real client reducers, i
     expect((await resumed.timeout(3000).emitWithAck("room:resume", sessions[0]!.credential)).ok).toBe(true);
     await vi.waitFor(() => expect(states[0]!.ownVote?.optionId).toBe("assist"));
     expect(activeScene(states[0]!).vote).toMatchObject({ decisionId: npcVote.decisionId, deadline: npcVote.deadline, serverNow: clock.now() });
-    expect(resumed.listeners("round-four:updated")).toHaveLength(2); // binder + observador de prueba
+    expect(resumed.listeners("round-six:updated")).toHaveLength(2); // binder + observador de prueba
     const counts = views.map(a => a.length); const resources = manager.suppliesView(code)!;
     clock.advance(53000);
     await vi.waitFor(() => expect(views.map(a => a.length)).toEqual(counts.map(n => n + 1)));
@@ -98,7 +100,7 @@ test("NPC inaction broadcasts one transition to all four real client reducers, i
     for (const s of states) {
       expect(s.roundFour).toMatchObject({ phase: "preparation", npc: { status: "dead", vote: { status: "closed", result: "NO_AGREEMENT" } },
         collapse: null, surcharge: 0, selection: null, movement: null });
-      expect(activeScene(s)).toMatchObject({ round: 4, kind: "round-four", vote: null });
+      expect(activeScene(s)).toMatchObject({ round: 6, kind: "round-four", vote: null });
     }
     expect(manager.suppliesView(code)!.inventory).toEqual(resources.inventory);
     expect(manager.suppliesView(code)!.characters).toEqual(resources.characters);
@@ -108,7 +110,7 @@ test("NPC inaction broadcasts one transition to all four real client reducers, i
     for (const client of clients) manager.votingSession(client.id!);
     clock.advance(30000);
     expect(views.map(a => a.length)).toEqual(settled);
-    expect((await resumed.timeout(3000).emitWithAck("round-four:open")).ok).toBe(true);
+    expect((await resumed.timeout(3000).emitWithAck("round-six:open")).ok).toBe(true);
     await vi.waitFor(() => expect(states.every(s => s.roundFour!.phase === "exit-voting")).toBe(true));
     const exit = manager.publicVote(code)!; expect(exit.decisionId).not.toBe(npcVote.decisionId);
     for (const i of [0, 1, 2]) expect((await clients[i]!.timeout(3000).emitWithAck("vote:cast",
@@ -150,7 +152,7 @@ test("four real socket sessions: synchronized NPC, own votes, F5, single costs a
     const bellhop = clients.find(c => manager.privateRole(c.id!)?.role === "bellhop")!;
     for (let i = 0; i < 4; i++) for (let n = 0; n < 2; n++) expect((await bellhop.timeout(3000).emitWithAck("pack:give",
       { requestId: crypto.randomUUID(), windowId: manager.suppliesView(code)!.windowId!, targetParticipantId: sessions[i]!.credential.participantId })).ok).toBe(true);
-    const outsider = await connect(); const otherUpdates = vi.fn(); outsider.on("round-four:updated", otherUpdates);
+    const outsider = await connect(); const otherUpdates = vi.fn(); outsider.on("round-six:updated", otherUpdates);
     const other = await outsider.timeout(3000).emitWithAck("room:create", { name: "Other room" });
     if (!other.ok) throw new Error(other.error);
     for (let i = 0; i < 3; i++) {
@@ -160,20 +162,22 @@ test("four real socket sessions: synchronized NPC, own votes, F5, single costs a
     expect((await outsider.timeout(3000).emitWithAck("room:start")).ok).toBe(true);
     const otherVote = manager.publicVote(other.value.room.code);
     const snapshots: RoundFourView[][] = [[], [], [], []];
-    clients.forEach((c, i) => c.on("round-four:updated", view => snapshots[i]!.push(view)));
+    clients.forEach((c, i) => c.on("round-six:updated", view => snapshots[i]!.push(view)));
+    completeIntermediateFixture(manager, code, clients[0]!.id!, clients.map(c => c.id!));
     random.mockReturnValue(0.9);
-    expect((await clients[0]!.timeout(3000).emitWithAck("round-four:advance")).ok).toBe(true);
+    expect((await clients[0]!.timeout(3000).emitWithAck("round-six:advance")).ok).toBe(true);
     random.mockReturnValue(0.99);
     await vi.waitFor(() => expect(snapshots.map(a => a.length)).toEqual([1, 1, 1, 1]));
     expect(snapshots.every(a => a[0]!.npc.encounter === "immobile")).toBe(true);
-    const secretFields = /token|tokenHash|sheet|knowledge|personalItems|accidentProbability|EXTREME|danger/;
+    const secretFields = /token|tokenHash|sheet|knowledge|personalItems|accidentProbability/;
     expect(JSON.stringify(snapshots)).not.toMatch(secretFields);
+    snapshots.forEach(a=>expect(a[0]!.options.every(o=>o.danger===undefined)).toBe(true));
     expect((await cast(0, "medical-assist")).ok).toBe(true);
     const voteBefore = manager.publicVote(code)!;
     const oldId = clients[0]!.id!; clients[0]!.disconnect();
     await vi.waitFor(() => expect(manager.privateRole(oldId)).toBe(null));
     const resumed = await connect(); const own = vi.fn(); const privateSheet = vi.fn(); const received = vi.fn();
-    resumed.on("vote:own", own); resumed.on("game:role", privateSheet); resumed.on("round-four:updated", received);
+    resumed.on("vote:own", own); resumed.on("game:role", privateSheet); resumed.on("round-six:updated", received);
     const resume = await resumed.timeout(3000).emitWithAck("room:resume", sessions[0]!.credential);
     expect(resume.ok).toBe(true); clients[0] = resumed;
     await vi.waitFor(() => expect(own).toHaveBeenCalled());
@@ -183,21 +187,21 @@ test("four real socket sessions: synchronized NPC, own votes, F5, single costs a
     expect((await cast(1, "medical-assist")).ok).toBe(true); expect((await cast(2, "medical-assist")).ok).toBe(true);
     expect(manager.roundFourView(code)!.npc.status).toBe("awaiting-effort");
     const inventory = manager.suppliesView(code)!.inventory;
-    expect((await clients[0]!.timeout(3000).emitWithAck("round-four:open")).ok).toBe(true);
+    expect((await clients[0]!.timeout(3000).emitWithAck("round-six:open")).ok).toBe(true);
     random.mockReturnValue(0); await vote("exterior-crack");
     const done = manager.roundFourView(code)!; expect(done.phase).toBe("completed");
     expect(done.movement!.inventory.medicalUnits).toBe(inventory.medicalUnits - 1);
-    expect(done.movement!.victims).toHaveLength(2);
+    expect(done.movement!.victims).toHaveLength(3);
     await vi.waitFor(() => expect(snapshots.slice(1).every(a => a.at(-1)?.phase === "completed")).toBe(true));
     snapshots.slice(1).forEach((a, i) => expect(a.at(-1)).toEqual(manager.sessionProjection(clients[i + 1]!.id!, done)));
     expect(received.mock.lastCall![0]).toEqual(manager.sessionProjection(resumed.id!, done));
     const calls = random.mock.calls.length; const count = snapshots[1]!.length;
-    await clients[0]!.timeout(3000).emitWithAck("round-four:advance");
-    await clients[0]!.timeout(3000).emitWithAck("round-four:retry", { preparationId: done.preparationId });
+    await clients[0]!.timeout(3000).emitWithAck("round-six:advance");
+    await clients[0]!.timeout(3000).emitWithAck("round-six:retry", { preparationId: done.preparationId });
     expect(manager.roundFourView(code)).toEqual(done);
     expect(random).toHaveBeenCalledTimes(calls); expect(snapshots[1]).toHaveLength(count);
     const resumeId = resumed.id!; resumed.disconnect(); await vi.waitFor(() => expect(manager.privateRole(resumeId)).toBe(null));
-    const final = await connect(); const finalView = vi.fn(); final.on("round-four:updated", finalView);
+    const final = await connect(); const finalView = vi.fn(); final.on("round-six:updated", finalView);
     expect((await final.timeout(3000).emitWithAck("room:resume", sessions[0]!.credential)).ok).toBe(true);
     await vi.waitFor(() => expect(finalView).toHaveBeenCalled()); expect(finalView.mock.lastCall![0]).toEqual(manager.sessionProjection(final.id!, done));
     expect(random).toHaveBeenCalledTimes(calls); expect(otherUpdates).not.toHaveBeenCalled();

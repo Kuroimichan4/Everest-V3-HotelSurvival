@@ -7,10 +7,10 @@ import { emptyGame, gameReducer } from "./game-state";
 import { bindGameSocket, type GameSocket } from "./game-socket";
 import { FinalResults } from "./FinalResults";
 
-const result: GameFinalResult = { id: "final", gameId: "game", closedAt: 1000, round: 4, kind: "evacuation-completed",
+const result: GameFinalResult = { id: "final", gameId: "game", closedAt: 1000, round: 6, kind: "evacuation-completed",
   humans: ["maintenance", "medic", "architect-engineer", "bellhop"].map((role, i) => ({ participantId: `p${i}`, name: `Persona ${i}`, role: role as GameFinalResult["humans"][number]["role"],
     health: i === 1 ? 0 : 70, energy: 15, status: i === 0 ? "abandoned" : i === 1 ? "dead" : "evacuated" })),
-  npcs: [{ round: 1, status: "rescued", evacuated: null }, { round: 2, status: "abandoned", evacuated: null }, { round: 4, status: "rescued", evacuated: true }],
+  npcs: [{ round: 1, status: "rescued", evacuated: null }, { round: 2, status: "abandoned", evacuated: null }, { round: 6, status: "rescued", evacuated: true }],
   counts: { evacuated: 2, dead: 1, abandoned: 1, rescuedNpcs: 2, evacuatedNpcs: 1 }, inventory: { packs: 4, medicalUnits: 2 }, crowbar: "lost",
   lastMovement: { routeName: "Grieta exterior", completed: true, accident: true, victimIds: ["p1", "p2"] }, decisions: ["La palanca se perdió."] };
 const objective: PrivateObjectiveEvidence = { resultId: "final", participantId: "p2", objective: "OBJETIVO PROPIO", evaluation: "pending-evaluation", evidenceState: "confirmed", facts: ["HECHO PROPIO"], missing: ["Evaluación pendiente."] };
@@ -49,6 +49,8 @@ test.each([["fulfilled", "Objetivo cumplido con información suficiente"], ["unf
   ["pending-evaluation", "Pendiente de evaluación"]] as const)("own objective %s has an explicit descriptive state without scores", (evaluation, text) => {
   const html = render({ ...objective, evaluation });
   expect(html).toContain(text); expect(html).not.toMatch(/Puntos:|Ganador:|Ranking:/);
+  expect(html).not.toContain("ni evaluación definitiva de objetivos");
+  expect(html).toContain("Última ruta recorrida:");
 });
 
 test("repeated final snapshots do not append results, and disconnect clears private evidence", () => {

@@ -1,3 +1,5 @@
+import { sectorWasEvacuated } from "./transport-crisis.js";
+import { ACCIDENT_PROBABILITIES } from "./balance-probabilities.js";
 import { IMMOBILE_NPC_RESCUE_ENERGY, EXIT_MOVEMENT_ENERGY, NPC_RESCUE_ENERGY } from "./energy-costs.js";
 import { applyDamage, spendEnergy, type OperationError } from "./operations.js";
 import { traverseRouteEffects, type RandomSource, type RouteError, type RouteEffectsResult } from "./routes.js";
@@ -13,9 +15,9 @@ export const NPC_WEAKENING_MESSAGE = "El superviviente parece debilitarse a cada
 /** Catálogo interno: no serializar al cliente. */
 export const ROUND_FOUR_ROUTES = Object.freeze({
   "revolving-door": Object.freeze({ name: "Puerta giratoria dañada del vestíbulo", energyCost: EXIT_MOVEMENT_ENERGY["revolving-door"],
-    danger: "LOW", accidentProbability: 0.1, accidentDamage: 5 }),
+    danger: "LOW", accidentProbability: ACCIDENT_PROBABILITIES.LOW, accidentDamage: 5 }),
   "exterior-crack": Object.freeze({ name: "Grieta en el muro exterior del acceso de carga y descarga", energyCost: EXIT_MOVEMENT_ENERGY["exterior-crack"],
-    danger: "EXTREME", accidentProbability: 0.5, accidentDamage: 30 }),
+    danger: "EXTREME", accidentProbability: ACCIDENT_PROBABILITIES.EXTREME, accidentDamage: 30 }),
 });
 
 interface NpcState {
@@ -43,7 +45,7 @@ export interface ExitOutcome {
   readonly rescuedNpc: boolean;
   readonly escapedHumanIds: readonly string[];
 }
-export interface RoundFourState extends SimulationState<4> {
+export interface RoundFourState extends SimulationState<6> {
   readonly roundFour: {
     readonly npc: NpcState;
     readonly exitVote?: { readonly id: string; readonly failedAttempts: 1 | 2 };
@@ -86,12 +88,12 @@ export function generateRoundFourEncounter(random: RandomSource): NpcEncounter |
 /** El llamador conserva el estado devuelto. Ningún registro global ni temporizador. */
 export function beginRoundFour(state: SimulationState | RoundFourState, random: RandomSource):
   { ok: true; state: RoundFourState } | { ok: false; state: SimulationState | RoundFourState; error: RoundFourError } {
-  if (state.currentRound === 4) return success(state as RoundFourState);
-  if (state.currentRound !== 3 || state.roundThreeRoute?.status !== "completed") return { ok: false, state, error: "round-four-not-ready" };
+  if (state.currentRound === 6) return success(state as RoundFourState);
+  if (state.currentRound !== 5 || (!state.intermediateRounds?.some(r => r.round === 5 && r.status === "completed") && !sectorWasEvacuated(state, 5))) return { ok: false, state, error: "round-four-not-ready" };
   if (!state.characters.some(isAlive)) return { ok: false, state, error: "no-living-characters" };
   const encounter = generateRoundFourEncounter(random);
   if (encounter === null) return { ok: false, state, error: "invalid-random" };
-  return success({ ...state, currentRound: 4, roundFour: {
+  return success({ ...state, currentRound: 6, roundFour: {
     npc: { encounter, status: encounter === "none" ? "absent" : "awaiting-decision", failedAttempts: 0 },
     energySurcharge: 0, revolvingDoorBlocked: false, forcedRoute: null,
   } });
@@ -170,7 +172,9 @@ export function roundFourRouteAvailability(state: RoundFourState) {
     const availability = error ? { status: "unavailable" as const, reason: error }
       : !prepared.ok ? { status: "unavailable" as const, reason: prepared.error }
       : routeEnergyAvailability(prepared.state, cost);
-    return { id, name: route.name, energyCost: cost, availability };
+    return { id, name: route.name, description: id === "revolving-door"
+      ? "La estructura de la puerta giratoria está deformada. La palanca puede ayudar al grupo a abrir paso hacia la calle."
+      : "Una abertura en el muro del acceso de carga y descarga deja ver la calle. El terreno y los escombros dificultan el paso.", energyCost: cost, availability };
   });
 }
 

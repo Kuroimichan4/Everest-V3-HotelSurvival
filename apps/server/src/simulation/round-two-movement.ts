@@ -8,6 +8,7 @@ export type MovementResolution =
   | { readonly status: "blocked"; readonly decisionId: string; readonly error: MovementError }
   | { readonly status: "completed"; readonly decisionId: string; readonly routeId: RouteId;
       readonly forced: boolean; readonly microearthquake: boolean; readonly accident: boolean;
+      readonly charges: readonly import("./transport.js").MovementCharge[];
       readonly energyCost: number; readonly victims: readonly { readonly characterId: string; readonly damage: number }[] };
 
 /** Una transacción: penalización de ruta + desplazamiento + accidente. Sin efectos externos salvo azar. */
@@ -29,5 +30,5 @@ export function resolveRoundTwoMovement(state: SimulationState,
       - final.characters.find(c => c.id === characterId)!.health }));
   return { ok: true, state: { ...final, roundTwo: { ...state.roundTwo,
     movement: { status: "completed", decisionId: choice.decisionId, routeId, forced,
-      microearthquake: forced, accident: traversal.accident, energyCost, victims } } } };
+      microearthquake: forced, accident: traversal.accident, energyCost, charges: traversal.charges, victims } } } };
 }

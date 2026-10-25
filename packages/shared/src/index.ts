@@ -14,18 +14,31 @@ export interface PingResponse {
 
 export type RouteActionReply = { ok: true } | { ok: false; error: string };
 export type RouteId = "unstable-corridor" | "ventilation" | "shoring";
+export type RouteRiskCategory = "LOW" | "MODERATE" | "HIGH" | "EXTREME";
+export interface ResourceEligibility { allowed: boolean; reason: string | null }
 export interface RouteAvailability { status: "available" | "with-help" | "unavailable"; reason: string | null }
 export interface RouteRecovery { decisionId: string; reason: string; forced: boolean }
 export interface FailedRouteSelection { round: 2 | 3; decisionId: string; outcome: string; reason: string; vote: PublicVote }
 export interface RouteChoiceView {
   phase: "preparation" | "voting" | "selected";
+  privateRoute?: { id: RouteId; name: string; description: string; energyCost: number };
   ventilationRevealed: boolean;
-  options: { id: RouteId; name: string; energyCost: number; blocked: string | null; availability: RouteAvailability }[];
+  options: { id: RouteId; name: string; description?: string; danger?: RouteRiskCategory; energyCost: number; blocked: string | null; availability: RouteAvailability }[];
   vote: PublicVote | null;
   result: { decisionId: string; outcome: RouteId | "NO_AGREEMENT" } | null;
 }
 
+/** Contratos exclusivamente privados de la capacidad de Botones. */
+export interface MedicalSabotageInput { requestId:string; gameId:string }
+export interface PrivateMedicalSabotage { participantId:string; gameId:string; performed:boolean; objectiveFulfilled:boolean; canManipulate:boolean; reason:string|null }
+export type MedicalSabotageReply = {ok:true;requestId:string;state:PrivateMedicalSabotage}|{ok:false;error:string};
 export interface ClientToServerEvents {
+  'chat:send': (input: ChatInput, ack: (reply: ChatReply) => void) => void;
+  "medical:sabotage": (input:MedicalSabotageInput,ack:(reply:MedicalSabotageReply)=>void)=>void;
+  "intermediate:action": (input: { round: 4 | 5; action: "advance" | "reveal" | "open" | "retry" }, ack: (reply: RouteActionReply) => void) => void;
+  "round-six:advance": (ack: (reply: RouteActionReply) => void) => void;
+  "round-six:open": (ack: (reply: RouteActionReply) => void) => void;
+  "round-six:retry": (input: { preparationId: string }, ack: (reply: RouteActionReply) => void) => void;
   "round-four:advance": (ack: (reply: RouteActionReply) => void) => void;
   "round-four:open": (ack: (reply: RouteActionReply) => void) => void;
   "round-four:retry": (input: { preparationId: string }, ack: (reply: RouteActionReply) => void) => void;
@@ -46,9 +59,15 @@ export interface ClientToServerEvents {
   "room:start": (ack: (result: RoomReply<PublicRoom>) => void) => void;
 }
 
+export interface PersonalDeathMessage { gameId:string; participantId:string; eventId:string; round:1|2|3|4|5|6; kind:"accident"|"gas"|"explosion"|"unexpected"; message:string }
 export interface ServerToClientEvents {
+  'chat:updated': (view: ChatView) => void;
+  "game:personal-death": (message:PersonalDeathMessage)=>void;
+  "medical:sabotage-private": (state:PrivateMedicalSabotage)=>void;
+  "intermediate:updated": (state: IntermediateRoundView[]) => void;
   "game:finished": (result: GameFinalResult) => void;
   "game:objective": (evidence: PrivateObjectiveEvidence) => void;
+  "round-six:updated": (state: RoundSixView) => void;
   "round-four:updated": (state: RoundFourView) => void;
   "game:activity": (state: GameActivityView) => void;
   "transport:updated": (state: TransportView) => void;
@@ -71,13 +90,13 @@ export interface FinalHuman {
   health?: number; energy?: number;
 }
 export interface FinalNpc {
-  round: 1 | 2 | 4;
+  round: 1 | 2 | 6;
   status: "not-encountered" | "absent" | "pending" | "approved" | "rescued" | "abandoned" | "dead";
   /** null: el motor no registra su llegada a la calle. */
   evacuated: boolean | null;
 }
 export interface GameFinalResult {
-  id: string; gameId: string; closedAt: number; round: 1 | 2 | 3 | 4;
+  id: string; gameId: string; closedAt: number; round: 1 | 2 | 3 | 4 | 5 | 6;
   kind: "evacuation-completed" | "no-active-humans";
   humans: FinalHuman[]; npcs: FinalNpc[];
   counts: { evacuated: number; dead: number; abandoned: number; rescuedNpcs: number; evacuatedNpcs: number };
@@ -97,17 +116,18 @@ export interface PrivateObjectiveEvidence {
 export interface GameActivityView {
   gameId: string;
   tools: { crowbar: "available" | "lost" };
-  entries: { id: string; round: 1 | 2 | 3 | 4; kind: "pack" | "treatment"; targetParticipantId: string; restored?: number }[];
+  entries: { id: string; round: 1 | 2 | 3 | 4 | 5 | 6; kind: "pack" | "treatment"; targetParticipantId: string; restored?: number }[];
 }
 
 export interface TransportCaseView {
   preparationId: string;
-  round: 1 | 2 | 3 | 4;
+  round: 1 | 2 | 3 | 4 | 5 | 6;
   routeId: string;
   routeName: string;
   routeCost: number;
-  phase: "preparation" | "voting" | "selection" | "pending" | "completed" | "blocked" | "superseded";
+  phase: "preparation" | "voting" | "selection" | "pending" | "completed" | "blocked" | "superseded" | "sector-evacuated";
   reason: string | null;
+  crisis?: { gas?: TransportIncidentView; explosion?: TransportIncidentView };
   exhaustedIds: string[];
   eligibleIds: string[];
   people: { participantId: string; name: string; energy?: number }[];
@@ -174,7 +194,7 @@ export interface OwnVote { decisionId: string; attemptId: string; optionId: stri
 export interface PublicVote {
   decisionId: string;
   attemptId: string;
-  round: 1 | 2 | 3 | 4;
+  round: 1 | 2 | 3 | 4 | 5 | 6;
   attemptNumber: number;
   deadline: number;
   serverNow: number;
@@ -185,21 +205,24 @@ export interface PublicVote {
 export type VoteReply = { ok: true; own: OwnVote } | { ok: false; error: string };
 
 export interface PackInput { requestId: string; windowId: string; targetParticipantId: string }
-export interface TreatmentInput { requestId: string; gameId: string; round: 1 | 2 | 3 | 4; targetParticipantId: string }
+export interface TreatmentInput { requestId: string; gameId: string; round: 1 | 2 | 3 | 4 | 5 | 6; targetParticipantId: string }
 export type TreatmentReply = { ok: true; requestId: string } | { ok: false; error: string };
 export interface MedicalView {
+  deaths?: {participantId:string;round:1|2|3|4|5|6;message:string}[];
   gameId: string;
-  round: 1 | 2 | 3 | 4;
+  round: 1 | 2 | 3 | 4 | 5 | 6;
   characters: RoundOneSummary["characters"];
   inventory: RoundOneSummary["inventory"];
-  treatments: { round: 1 | 2 | 3 | 4; participantId: string; healthRestored?: number }[];
+  treatments: { round: 1 | 2 | 3 | 4 | 5 | 6; participantId: string; healthRestored?: number }[];
 }
 export type PackReply = { ok: true; requestId: string } | { ok: false; error: string };
 /** Estado actual público, separado de las instantáneas históricas al terminar rutas. */
 export interface SuppliesView {
   gameId: string;
-  round: 1 | 2 | 3 | 4;
+  round: 1 | 2 | 3 | 4 | 5 | 6;
   windowId: string | null;
+  sectorEvacuation?: { incidentId: string; round: 1|2|3|4|5; routeId: string };
+  resourceActions?: { participantId: string; packEligibility?: ResourceEligibility; medicalEligibility?: ResourceEligibility }[];
   movementBlocked?: string;
   characters: RoundOneSummary["characters"];
   inventory: RoundOneSummary["inventory"];
@@ -216,7 +239,7 @@ export interface RoundOneSummary {
   npc: "rescued" | "abandoned";
   microearthquake: boolean;
   costs: { rescueEnergy: number; movementEnergy: number; damage: number };
-  characters: { participantId: string; name: string; health?: number; energy?: number; status?: "active" | "dead" | "abandoned"; eliminated?: boolean }[];
+  characters: { participantId: string; name: string; role?: AssignedRole; health?: number; energy?: number; status?: "active" | "dead" | "abandoned" | "exhausted" | "transported"; eliminated?: boolean }[];
   inventory: { packs: number; medicalUnits: number };
 }
 
@@ -226,6 +249,7 @@ export interface RoundTwoView {
   movement: {
     status: "completed"; decisionId: string; routeId: RouteId; routeName: string;
     forced: boolean; microearthquake: boolean; accident: boolean; energyCost: number;
+    charges?: { participantId: string; energy: number; kind: "walking" | "carrier" | "transported" }[];
     victims: { participantId: string; name: string; damage?: number }[];
   } | { status: "blocked"; decisionId: string; reason: string } | null;
   routeChoice: RouteChoiceView | null;
@@ -233,13 +257,13 @@ export interface RoundTwoView {
   npcId: "round-two-survivor";
   mobility: "walks-with-help";
   npc: "pending" | "rescued" | "abandoned";
-  phase: "rescue-vote" | "resolution-blocked" | "route-pending" | "movement-blocked" | "transport-pending" | "completed";
+  phase: "rescue-vote" | "resolution-blocked" | "route-pending" | "movement-blocked" | "transport-pending" | "completed" | "sector-evacuated";
   blocked: "insufficient-energy" | null;
   result: RescueOutcome | null;
   microearthquake: boolean;
   characters: RoundOneSummary["characters"];
   inventory: RoundOneSummary["inventory"];
-  previousNpc: RoundOneSummary["npc"];
+  previousNpc: "rescued" | "abandoned" | "pending";
 }
 
 export type RoundThreeRouteId = "fire-door" | "pipe-gallery" | "metal-debris";
@@ -247,7 +271,7 @@ export type ExitRouteId = "revolving-door" | "exterior-crack";
 export type RoundFourNpcChoice = "abandon" | "assist" | "carry" | "medical-assist";
 /** Proyección pública explícita. Sin catálogo de riesgos, roles ni credenciales. */
 export interface RoundFourView {
-  round: 4;
+  round: 6;
   preparationId: string;
   phase: "npc-voting" | "preparation" | "exit-voting" | "transport" | "blocked" | "completed";
   npc: {
@@ -260,7 +284,7 @@ export interface RoundFourView {
     options: { id: RoundFourNpcChoice; label: string; energyPerHuman: number; medicalUnits: number; available: boolean }[];
     vote: PublicVote | null;
   };
-  options: { id: ExitRouteId; name: string; energyCost: number; availability: RouteAvailability }[];
+  options: { id: ExitRouteId; name: string; description?: string; danger?: RouteRiskCategory; energyCost: number; availability: RouteAvailability }[];
   vote: PublicVote | null;
   selection: { decisionId: string; outcome: ExitRouteId | "NO_AGREEMENT" } | null;
   forced: boolean;
@@ -279,8 +303,8 @@ export interface RoundThreeView {
   recovery?: RouteRecovery;
   failedSelections?: FailedRouteSelection[];
   round: 3;
-  phase: "preparation" | "voting" | "transport" | "completed" | "blocked";
-  options: { id: RoundThreeRouteId; name: string; description: string; energyCost: number; availability: RouteAvailability }[];
+  phase: "preparation" | "voting" | "transport" | "completed" | "blocked" | "sector-evacuated";
+  options: { id: RoundThreeRouteId; name: string; description: string; danger?: RouteRiskCategory; energyCost: number; availability: RouteAvailability }[];
   vote: PublicVote | null;
   selection: { decisionId: string; outcome: RoundThreeRouteId | "NO_AGREEMENT" } | null;
   forced: boolean;
@@ -296,5 +320,30 @@ export interface RoundThreeView {
   } | null;
   blocked: string | null;
   afterRoute: { characters: RoundOneSummary["characters"]; inventory: RoundOneSummary["inventory"]; crowbar: "available" | "lost" } | null;
-  previousNpcs: { round: 1 | 2; status: "rescued" | "abandoned" }[];
+  previousNpcs: { round: 1 | 2; status: "rescued" | "abandoned" | "pending" }[];
 }
+
+/** El nombre RoundFourView se conserva como alias técnico del protocolo anterior: ahora es ronda 6. */
+export type RoundSixView = RoundFourView;
+export interface IntermediateRoundView {
+  round: 4 | 5; title: string; narrative: string; preparationId: string;
+  phase: "preparation" | "voting" | "movement" | "completed" | "sector-evacuated";
+  options: { id: string; name: string; description: string; energyCost: number; danger?: RouteRiskCategory; selectable: boolean; availability: RouteAvailability }[];
+  failedAttempts?: { attemptNumber: number; closedAt: number }[];
+  consequence?: { decisionId: string; forcedRouteId: string; routeName: string; victims: { participantId: string; name: string; damage?: number }[]; deceasedIds: string[] };
+  canReveal: boolean; vote: PublicVote | null; blocked: string | null;
+  movement: { requestId: string; routeId: string; routeName: string; energyCost: number; accident: boolean;
+    victims: { participantId: string; name: string; damage?: number }[]; deceasedIds: string[];
+    characters: RoundOneSummary["characters"]; inventory: RoundOneSummary["inventory"] } | null;
+}
+
+export interface TransportIncidentView { incidentId: string; at: number; victims: { participantId: string; damage?: number }[]; deceasedIds: string[] }
+
+export interface ChatInput { requestId: number; text: string }
+export interface ChatMessage {
+  id: string; sequence: number; requestId: number; sentAt: number; text: string;
+  sender: { kind: 'human'; participantId: string; name: string; role?: AssignedRole }
+    | { kind: 'server'; name: string };
+}
+export interface ChatView { code: string; sequence: number; messages: ChatMessage[]; canWrite: boolean; nextRequestId: number }
+export type ChatReply = { ok: true; messageId: string } | { ok: false; error: 'invalid-session' | 'invalid-input' | 'invalid-text' | 'read-only' | 'stale-request' | 'rate-limited' };

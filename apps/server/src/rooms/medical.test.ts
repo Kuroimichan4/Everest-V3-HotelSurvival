@@ -54,7 +54,7 @@ test("sesión autenticada, Médico vivo, humano y partida correctos; no se conf�
     expect(f.manager.treat(`s${i}`, f.input())).toEqual({ ok: false, error: "not-authorized" });
     expect(f.manager.treat(`s${i}`, { ...f.input(), role: "medic", actorId: f.sessions[f.medic]!.credential.participantId })).toEqual({ ok: false, error: "not-authorized" });
   }
-  for (const bad of [null, {}, { ...f.input(), role: "medic" }, { ...f.input(), round: 5 }, { ...f.input(), requestId: "" }]) expect(f.manager.treat(`s${f.medic}`, bad)).toEqual({ ok: false, error: "invalid-input" });
+  for (const bad of [null, {}, { ...f.input(), role: "medic" }, { ...f.input(), round: 7 }, { ...f.input(), requestId: "" }]) expect(f.manager.treat(`s${f.medic}`, bad)).toEqual({ ok: false, error: "invalid-input" });
   expect(f.treat({ ...f.input(), gameId: randomUUID() })).toEqual({ ok: false, error: "wrong-game" });
   expect(f.treat({ ...f.input(), round: 2 })).toEqual({ ok: false, error: "wrong-round" });
   expect(f.treat({ ...f.input(), round: 4 })).toEqual({ ok: false, error: "wrong-round" });

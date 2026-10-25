@@ -1,3 +1,4 @@
+import { RouteRisk } from "./RouteInformation";
 import type { OwnVote, RoundThreeView } from "@everest/shared";
 import { VotePanel } from "./VotePanel";
 import { RouteAvailabilityNotice, RouteRecoveryPanel } from "./RouteAvailability";
@@ -15,8 +16,8 @@ export function RoundThree({ state, own, creator, enabled, busy, onOpen, onVote,
       {state.options.every(o => o.availability.status === "unavailable") && <p role="status">No hay rutas disponibles. Botones puede repartir packs para revisar las opciones.</p>}
     </>}
     {state.phase === "voting" && state.vote ? <VotePanel title="Votación de ruta" vote={state.vote} own={own} enabled={enabled} busy={busy} onVote={onVote}
-      options={state.options.map(o => ({ id: o.id, label: o.name, disabled: o.availability.status === "unavailable", detail: <><p>{o.description}</p><span className="cost-badge">−{o.energyCost} energía</span><RouteAvailabilityNotice value={o.availability} /></> }))} />
-      : <div className="option-grid">{state.options.map(o => <article key={o.id} className={`option-card ${o.availability.status === "unavailable" ? "unavailable" : ""}`}><h4>{o.name}</h4><p>{o.description}</p><span className="cost-badge">−{o.energyCost} energía</span><RouteAvailabilityNotice value={o.availability} /></article>)}</div>}
+      options={state.options.map(o => ({ id: o.id, label: o.name, disabled: o.availability.status === "unavailable", detail: <><p>{o.description}</p><span className="cost-badge">−{o.energyCost} energía</span><RouteRisk danger={o.danger} />{o.id === "fire-door" && <p className="cost-badge">−1 palanca · Requiere la palanca; se pierde al completar el recorrido.</p>}<RouteAvailabilityNotice value={o.availability} /></> }))} />
+      : <div className="option-grid">{state.options.map(o => <article key={o.id} className={`option-card ${o.availability.status === "unavailable" ? "unavailable" : ""}`}><h4>{o.name}</h4><p>{o.description}</p><span className="cost-badge">−{o.energyCost} energía</span><RouteRisk danger={o.danger} />{o.id === "fire-door" && <p className="cost-badge">−1 palanca · Requiere la palanca; se pierde al completar el recorrido.</p>}<RouteAvailabilityNotice value={o.availability} /></article>)}</div>}
     {state.earthquake && <p className="warning">El terremoto ha bloqueado las otras rutas. La galería es obligatoria.</p>}
     {state.blocked && <p role="alert">{reasonLabel(state.blocked)}</p>}
   </section>;

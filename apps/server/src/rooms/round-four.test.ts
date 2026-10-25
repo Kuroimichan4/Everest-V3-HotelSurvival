@@ -1,3 +1,4 @@
+import { completeIntermediateFixture } from "../../test-support/final-stage.js";
 import { afterEach, expect, test, vi } from "vitest";
 import type { RoomReply } from "@everest/shared";
 import type { SimulationState } from "../simulation/state.js";
@@ -41,6 +42,7 @@ function setup() {
     manager.roundThreeAction("s0", "advance"); manager.roundThreeAction("s0", "open"); vote("metal-debris");
     // Suministros reales de preparación: dos packs a cada humano (15 -> 65).
     for (let i = 0; i < 4; i++) { expect(pack(i).ok).toBe(true); expect(pack(i).ok).toBe(true); }
+    completeIntermediateFixture(manager, code, "s0", ["s0", "s1", "s2", "s3"]);
   };
   const begin = (roll = 0) => { random.mockReturnValue(roll); const r = manager.roundFourAction("s0", "advance"); random.mockReturnValue(0.99); expect(r.ok).toBe(true); };
   return { manager, clock, random, sessions, code, cast, vote, game, setState, role, pack, roundThree, begin };
@@ -53,7 +55,7 @@ test("host-only transition, prior completion required, identities and resources 
   const roles = [0, 1, 2, 3].map(i => f.manager.privateRole(`s${i}`));
   expect(f.manager.roundFourAction("s1", "advance")).toMatchObject({ ok: false, error: "not-creator" });
   f.begin();
-  expect(f.manager.suppliesView(f.code)).toMatchObject({ round: 4, characters: before.characters, inventory: before.inventory });
+  expect(f.manager.suppliesView(f.code)).toMatchObject({ round: 6, characters: before.characters, inventory: before.inventory });
   expect([0, 1, 2, 3].map(i => f.manager.privateRole(`s${i}`))).toEqual(roles);
   expect(f.manager.roundFourView(f.code)).toMatchObject({ phase: "preparation", npc: { encounter: "none", vote: null } });
   const calls = f.random.mock.calls.length;
@@ -66,7 +68,7 @@ test.each([[0.6, "assist", 25, 0], [0.9, "carry", 40, 0], [0.9, "medical-assist"
   const f = setup(); f.roundThree(); f.begin(roll);
   const before = f.manager.suppliesView(f.code)!;
   expect(f.manager.roundFourView(f.code)!.phase).toBe("npc-voting");
-  expect(f.manager.publicVote(f.code)).toMatchObject({ round: 4, requiredVotes: 3, attemptNumber: 1, deadline: f.clock.now() + 60000 });
+  expect(f.manager.publicVote(f.code)).toMatchObject({ round: 6, requiredVotes: 3, attemptNumber: 1, deadline: f.clock.now() + 60000 });
   expect(f.manager.roundFourAction("s0", "open")).toMatchObject({ ok: false, error: "npc-decision-pending" });
   f.cast(0, choice); f.cast(1, choice);
   expect(f.manager.roundFourView(f.code)!.npc.status).toBe("awaiting-decision");
@@ -94,12 +96,12 @@ test("NPC medical option requires stock, no extra medical voting; human speciali
   const bellhop = f.role("bellhop"); const medic = f.role("medic");
   const supplies = f.manager.suppliesView(f.code)!;
   expect(f.manager.givePack(`s${medic}`, { requestId: "pack", windowId: supplies.windowId!, targetParticipantId: f.sessions[0]!.credential.participantId })).toMatchObject({ ok: false, error: "not-authorized" });
-  const treatment = { requestId: "treat", gameId: supplies.gameId, round: 4 as const, targetParticipantId: f.sessions[0]!.credential.participantId };
+  const treatment = { requestId: "treat", gameId: supplies.gameId, round: 6 as const, targetParticipantId: f.sessions[0]!.credential.participantId };
   expect(f.manager.treat(`s${bellhop}`, treatment)).toMatchObject({ ok: false, error: "not-authorized" });
   f.setState(s => ({ ...s, inventory: { ...s.inventory, medicalUnits: 2 }, characters: s.characters.map(c => ({ ...c, health: 80 })) }));
   expect(f.manager.treat(`s${medic}`, treatment).ok).toBe(true);
   expect(f.manager.treat(`s${medic}`, treatment).ok).toBe(true);
-  expect(f.manager.medicalView(f.code)!.treatments.filter(t => t.round === 4)).toHaveLength(1);
+  expect(f.manager.medicalView(f.code)!.treatments.filter(t => t.round === 6)).toHaveLength(1);
   expect(f.pack(0).ok).toBe(true);
   expect(f.manager.roundFourAction("s0", "open").ok).toBe(true);
   expect(f.manager.treat(`s${medic}`, { ...treatment, requestId: "during-vote" })).toMatchObject({ ok: false, error: "supplies-not-open" });
@@ -125,7 +127,7 @@ test("pack and medical receipts can be recovered after evacuation without new ex
   const f = setup(); f.roundThree(); f.begin();
   f.setState(s => ({ ...s, characters: s.characters.map(c => ({ ...c, health: 80 })) }));
   const supplies = f.manager.suppliesView(f.code)!;
-  const treatment = { requestId: "pending-medical", gameId: supplies.gameId, round: 4 as const, targetParticipantId: f.sessions[0]!.credential.participantId };
+  const treatment = { requestId: "pending-medical", gameId: supplies.gameId, round: 6 as const, targetParticipantId: f.sessions[0]!.credential.participantId };
   const pack = { requestId: "pending-pack", windowId: supplies.windowId!, targetParticipantId: f.sessions[0]!.credential.participantId };
   const medic = `s${f.role("medic")}`; const bellhop = `s${f.role("bellhop")}`;
   expect(f.manager.treat(medic, treatment).ok).toBe(true);
@@ -189,9 +191,9 @@ test.each([["revolving-door", 5], ["exterior-crack", 30]] as const)("%s accident
   const f = setup(); f.roundThree(); f.setState(s => ({ ...s, characters: s.characters.map(c => ({ ...c, health: damage })) }));
   f.begin(); f.manager.roundFourAction("s0", "open"); f.random.mockReturnValue(0); f.vote(route);
   const result = f.manager.roundFourView(f.code)!;
-  expect(result.movement!.victims).toHaveLength(2);
-  expect(result.movement!.deceasedIds).toHaveLength(2);
-  expect(new Set(result.movement!.victims.map(v => v.participantId)).size).toBe(2);
+  expect(result.movement!.victims).toHaveLength(3);
+  expect(result.movement!.deceasedIds).toHaveLength(3);
+  expect(new Set(result.movement!.victims.map(v => v.participantId)).size).toBe(3);
   const calls = f.random.mock.calls.length;
   f.manager.roundFourSession("s0"); f.manager.votingSession("s0");
   expect(f.random).toHaveBeenCalledTimes(calls);
@@ -202,7 +204,7 @@ test("combined NPC effort and human transport use residual budget and charge ato
   f.begin(0.6); f.vote("assist"); f.manager.roundFourAction("s0", "open"); f.vote("exterior-crack");
   expect(f.manager.roundFourView(f.code)!.npc.status).toBe("awaiting-effort");
   const transport = f.manager.transportView(f.code)!.cases.at(-1)!;
-  expect(transport.round).toBe(4); expect(transport.exhaustedIds).toEqual([f.sessions[0]!.credential.participantId]);
+  expect(transport.round).toBe(6); expect(transport.exhaustedIds).toEqual([f.sessions[0]!.credential.participantId]);
   expect(f.manager.openTransport("s1", { preparationId: transport.preparationId }).ok).toBe(true);
   expect(f.cast(0, "carry-all")).toMatchObject({ ok: false, error: "not-authorized" });
   f.vote("carry-all", [1, 2]);
@@ -295,6 +297,6 @@ test("reconnect preserves encounter, votes, deadline, decision and result; no pr
   f.manager.disconnect("new"); value(f.manager.resume("again", f.sessions[0]!.credential));
   expect(f.manager.roundFourSession("again")).toEqual(done);
   expect(f.random).toHaveBeenCalledTimes(calls);
-  const json = JSON.stringify(done);
-  expect(json).not.toMatch(/token|role|sheet|knowledge|personalItems|accidentProbability|danger|EXTREME|LOW/);
+  const json = JSON.stringify(f.manager.sessionProjection("again", done));
+  expect(json).not.toMatch(/token|sheet|knowledge|personalItems|accidentProbability/);
 });

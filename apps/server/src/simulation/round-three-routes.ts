@@ -1,3 +1,4 @@
+import { ACCIDENT_PROBABILITIES } from "./balance-probabilities.js";
 import { MOVEMENT_ENERGY } from "./energy-costs.js";
 import type { TransportPlan } from "./transport.js";
 import { traverseRouteEffects, type RandomSource, type RouteEffects, type RouteError } from "./routes.js";
@@ -11,9 +12,9 @@ interface Definition extends RouteEffects {
 }
 // Exclusivo del backend. Las vistas públicas se proyectan sin copiar estas definiciones.
 const definitions: readonly Definition[] = [
-  { id: "fire-door", name: "Puerta cortafuegos", energyCost: MOVEMENT_ENERGY["fire-door"], danger: "MODERATE", accidentProbability: 0.2, accidentDamage: 10 },
-  { id: "pipe-gallery", name: "Galería de tuberías", energyCost: MOVEMENT_ENERGY["pipe-gallery"], danger: "EXTREME", accidentProbability: 0.5, accidentDamage: 30 },
-  { id: "metal-debris", name: "Escombros metálicos", energyCost: MOVEMENT_ENERGY["metal-debris"], danger: "MODERATE", accidentProbability: 0.2, accidentDamage: 10 },
+  { id: "fire-door", name: "Puerta cortafuegos", energyCost: MOVEMENT_ENERGY["fire-door"], danger: "MODERATE", accidentProbability: ACCIDENT_PROBABILITIES.MODERATE, accidentDamage: 10 },
+  { id: "pipe-gallery", name: "Galería de tuberías", energyCost: MOVEMENT_ENERGY["pipe-gallery"], danger: "EXTREME", accidentProbability: ACCIDENT_PROBABILITIES.EXTREME, accidentDamage: 30 },
+  { id: "metal-debris", name: "Escombros metálicos", energyCost: MOVEMENT_ENERGY["metal-debris"], danger: "MODERATE", accidentProbability: ACCIDENT_PROBABILITIES.MODERATE, accidentDamage: 10 },
 ];
 
 /** Solo para evidencias internas; no modifica las proyecciones autorizadas. */
@@ -85,9 +86,14 @@ export function resolveRoundThreeRoute(state: SimulationState, requestId: string
     roundThreeRoute: { status: "completed", outcome } } };
 }
 
-export interface RoundThreeRouteView { id: RoundThreeRouteId; name: string; energyCost: number }
+export interface RoundThreeRouteView { id: RoundThreeRouteId; name: string; description: string; energyCost: number }
 export function publicRoundThreeRouteViews(): RoundThreeRouteView[] {
-  return definitions.map(route => ({ id: route.id, name: route.name, energyCost: route.energyCost }));
+  const descriptions: Record<RoundThreeRouteId, string> = {
+    "fire-door": "Una puerta pesada bloquea un acceso de la zona de servicios. La palanca permite forzarla y se pierde al completar el recorrido.",
+    "pipe-gallery": "Las conducciones dañadas atraviesan una galería de tuberías y calderas. El humo y el gas acumulados dificultan la respiración.",
+    "metal-debris": "Grandes piezas metálicas y maquinaria desplazada ocupan el paso. El equipo debe sortear los obstáculos para continuar.",
+  };
+  return definitions.map(route => ({ id: route.id, name: route.name, description: descriptions[route.id], energyCost: route.energyCost }));
 }
 
 /** Proyección privada a un rol que el futuro llamador deberá obtener de su sesión. Sin cantidades. */

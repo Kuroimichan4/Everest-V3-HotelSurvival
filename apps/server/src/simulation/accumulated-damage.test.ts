@@ -17,7 +17,7 @@ test.each([20, 35])("8A.1: galería con salud inicial %i registra una sola muert
   expect(result.state.characters[0]!.eliminated).not.toBe(true);
   expect(result.outcome.deceasedIds).toEqual([state.characters[0]!.id]);
   expect(resolveRoundThreeRoute(result.state, "fatal-gallery", "pipe-gallery", random).state).toBe(result.state);
-  expect(random).toHaveBeenCalledTimes(health === 20 ? 1 : 3);
+  expect(random).toHaveBeenCalledTimes(health === 20 ? 1 : 4);
   const future = traverseRouteEffects(result.state, { energyCost: 10, accidentProbability: 0.5, accidentDamage: 30 }, () => 0);
   expect(future.ok).toBe(true);
   if (!future.ok) throw new Error(future.error);
@@ -25,14 +25,14 @@ test.each([20, 35])("8A.1: galería con salud inicial %i registra una sola muert
   expect(future.state.characters[0]).toEqual(result.state.characters[0]);
 });
 
-test.each([1, 2, 3, 4])("accidente con %i vivos: min(2, vivos) víctimas distintas y daño único", living => {
+test.each([1, 2, 3, 4])("accidente con %i vivos: min(3, vivos) víctimas distintas y daño único", living => {
   const initial = createInitialState();
   const state = { ...initial, characters: initial.characters.map((c, i) => ({ ...c, health: i < living ? 100 : 0 })) };
   const random = vi.fn(() => 0);
   const result = traverseRouteEffects(state, { energyCost: 10, accidentProbability: 0.35, accidentDamage: 20 }, random);
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.error);
-  const count = Math.min(2, living);
+  const count = Math.min(3, living);
   expect(result.victimIds).toHaveLength(count);
   expect(new Set(result.victimIds).size).toBe(count);
   expect(result.state.characters.map(c => c.health)).toEqual(Array.from({ length: 4 }, (_, i) => i < count ? 80 : i < living ? 100 : 0));
@@ -57,13 +57,13 @@ test("las víctimas se eligen al inicio, aunque humo por sí solo ya fuera morta
   const result = resolveRoundThreeRoute(state, "r3", "pipe-gallery", random);
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.error);
-  expect(result.outcome.victimIds).toEqual(state.characters.slice(0, 2).map(c => c.id));
+  expect(result.outcome.victimIds).toEqual(state.characters.slice(0, 3).map(c => c.id));
   expect(result.outcome.environmentalVictimIds).toEqual(state.characters.map(c => c.id));
-  expect(result.state.characters.map(c => c.health)).toEqual([0, 0, 15, 15]);
-  expect(result.outcome.deceasedIds).toEqual(state.characters.slice(0, 2).map(c => c.id));
+  expect(result.state.characters.map(c => c.health)).toEqual([0, 0, 0, 15]);
+  expect(result.outcome.deceasedIds).toEqual(state.characters.slice(0, 3).map(c => c.id));
   expect(result.state.characters.slice(0, 2).every(c => !isAlive(c))).toBe(true);
   expect(resolveRoundThreeRoute(result.state, "r3", "pipe-gallery", random).state).toBe(result.state);
-  expect(random).toHaveBeenCalledTimes(3);
+  expect(random).toHaveBeenCalledTimes(4);
 });
 
 test("un superviviente puede fallecer por la acumulación, con una sola aplicación del total", () => {

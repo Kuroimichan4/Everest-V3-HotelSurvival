@@ -8,11 +8,11 @@ function storedRequest(key: string): TreatmentInput | null {
     if (!raw) return null;
     const input = JSON.parse(raw) as Partial<TreatmentInput> | null;
     return input && typeof input.requestId === "string" && typeof input.gameId === "string"
-      && (input.round === 1 || input.round === 2 || input.round === 3 || input.round === 4) && typeof input.targetParticipantId === "string" ? input as TreatmentInput : null;
+      && (input.round === 1 || input.round === 2 || input.round === 3 || input.round === 4 || input.round === 5 || input.round === 6) && typeof input.targetParticipantId === "string" ? input as TreatmentInput : null;
   } catch { return null; }
 }
 const errors: Record<string, string> = {
-  "supplies-not-open": "Los tratamientos de ronda 4 están disponibles durante la preparación, antes de evacuar.",
+  "supplies-not-open": "Los tratamientos de estas rondas están disponibles durante la preparación, antes de evacuar.",
   "no-medical-units": "No quedan unidades médicas disponibles.",
   "health-full-pending": "El paciente tiene la salud completa. No se ha consumido ninguna unidad.",
   "treatment-used": "Este personaje ya recibió su unidad médica en esta ronda.",

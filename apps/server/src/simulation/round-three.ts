@@ -1,10 +1,11 @@
+import { sectorWasEvacuated } from "./transport-crisis.js";
 import type { TransportPlan } from "./transport.js";
 import type { SimulationState } from "./state.js";
 import { resolveRoundThreeRoute, type RoundThreeRouteId } from "./round-three-routes.js";
 import type { RandomSource } from "./routes.js";
 
 export function beginRoundThree(state: SimulationState): SimulationState {
-  if (state.currentRound !== 2 || state.roundTwo?.movement?.status !== "completed" || state.roundThreeRoute) return state;
+  if (state.currentRound !== 2 || (state.roundTwo?.movement?.status !== "completed" && !sectorWasEvacuated(state, 2)) || state.roundThreeRoute) return state;
   return { ...state, currentRound: 3 };
 }
 

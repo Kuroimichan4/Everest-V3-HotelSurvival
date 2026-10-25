@@ -156,7 +156,7 @@ test("los que caminan pero no pueden portear no votan; planes impagables se rech
   expect(f.supplies().characters.map(c => c.energy)).toEqual([0, 0, 0, 0]);
 });
 
-test.each(["transport", "recipient"])("60/30 segundos y desacuerdo seguro en etapa %s", stage => {
+test.each(["transport", "recipient"])("60/30/10 segundos, gas y evacuación en etapa %s", stage => {
   const f = setup(3, [0, 0, 100, 100]); f.open("s2");
   if (stage === "recipient") f.vote("carry-one", [2, 3]);
   const original = f.state(); const first = f.view().vote!;
@@ -167,10 +167,12 @@ test.each(["transport", "recipient"])("60/30 segundos y desacuerdo seguro en eta
   expect(second.deadline - second.serverNow).toBe(30_000);
   expect(f.manager.vote("s2", { decisionId: first.decisionId, attemptId: first.attemptId, optionId: "leave-all" })).toEqual({ ok: false, error: "wrong-attempt" });
   f.clock.advance(30_000);
-  expect(f.view()).toMatchObject({ phase: "pending", reason: "transport-no-agreement", abandonedIds: [] });
-  expect(f.state()).toBe(original); expect(f.random).not.toHaveBeenCalled();
-  expect(f.supplies().windowId).toBeNull();
-  f.open(); expect(f.state()).toBe(original);
+  expect(f.view().vote).toMatchObject({ attemptNumber: 3, status: "open" });
+  expect(f.state().characters.map(c => c.health)).toEqual(original.characters.map(c => c.health - 5));
+  f.clock.advance(10_000);
+  expect(f.view()).toMatchObject({ phase: "sector-evacuated", reason: "sector-evacuated-after-explosion" });
+  expect(f.state().currentRound).toBe(4); expect(f.random).not.toHaveBeenCalled();
+  expect(f.supplies().windowId).not.toBeNull();
 });
 
 test.each([
@@ -233,7 +235,7 @@ test("transportados participan en humo, accidente y muerte acumulada; abandonado
   if (resolution.status !== "completed") throw new Error("Missing outcome");
   expect(resolution.outcome.victimIds).toContain(f.state().characters[1]!.id);
   expect(resolution.outcome.deceasedIds).toEqual([f.state().characters[1]!.id]);
-  expect(f.random).toHaveBeenCalledTimes(3);
+  expect(f.random).toHaveBeenCalledTimes(4);
 });
 
 test("packs reducen dos agotados a uno antes de fijar opciones y electorado", () => {
@@ -327,4 +329,24 @@ test("10A: changing an open transport vote preserves authorization for each alte
   expect(f.view().phase).toBe("selection");
   f.vote("person-0", [2, 3]);
   expect(f.view().transportedIds).toEqual([f.id(0)]);
+});
+
+ test.each([1,2,3] as const)("crisis round %i evacuates without ordinary movement and hands over abandoned host",round=>{
+ const f=setup(round);const hostChanged=vi.fn();f.manager.onRoomChanged=hostChanged;const before=f.state();f.open();f.clock.advance(60000);f.clock.advance(30000);f.clock.advance(10000);
+ expect(hostChanged).toHaveBeenCalledTimes(1);expect(f.state().currentRound).toBe(round+1);expect(f.state().sectorEvacuations?.at(-1)).toMatchObject({round,routeId:f.view().routeId});
+ expect(f.state().characters.map(c=>c.energy)).toEqual(before.characters.map(c=>c.energy));expect(f.state().characters.map(c=>c.health)).toEqual(before.characters.map(c=>c.health-10));
+ expect(f.state().characters[0]!.eliminated).toBe(true);expect(f.state().inventory).toEqual(before.inventory);expect(f.state().tools).toEqual(before.tools);expect(f.random).not.toHaveBeenCalled();
+ f.manager.disconnect('s1');const resumed=value(f.manager.resume('new-host-check',f.sessions[1]!.credential));expect(resumed.room.creatorId).toBe(f.id(1));
+ const opened=round===1?f.manager.routeAction('new-host-check','open'):round===2?f.manager.roundThreeAction('new-host-check','open'):f.manager.intermediateAction('new-host-check',{round:4,action:'open'});
+ expect(opened.ok).toBe(true);expect(f.manager.privateRole('s0')).toBeNull();expect(f.manager.vote('s0',{decisionId:'x',attemptId:'y',optionId:'x'})).toEqual({ok:false,error:'dead'});
+ });
+ test.each(['fire-door','metal-debris'])("sector evacuation grants no reward or tool loss for %s",route=>{
+ const f=setup(3,[0,100,100,100],route);const before=f.state();f.open();f.clock.advance(60000);f.clock.advance(30000);f.clock.advance(10000);
+ expect(f.state().roundThreeRoute).toBeUndefined();expect(f.state().inventory).toEqual(before.inventory);expect(f.state().tools).toEqual(before.tools);
+ });
+
+test.each(['gas','explosion','abandonment'] as const)('terminal crisis %s uses existing no-survivor result without another round',kind=>{
+ const f=setup(1);f.change(s=>({...s,characters:s.characters.map((c,i)=>({...c,health:kind==='gas'?5:kind==='abandonment'&&i===0?100:10}))}));f.open();f.clock.advance(60000);f.clock.advance(30000);if(kind!=='gas')f.clock.advance(10000);
+ expect(f.state().currentRound).toBe(1);const result=f.manager.finalResult(f.code)!;expect(result).not.toBeNull();expect(result.counts.evacuated).toBe(0);expect(f.clock.tasks.size).toBe(0);
+ expect(f.state().transportIncidents).toHaveLength(kind==='gas'?1:2);expect(f.view().abandonedIds).toHaveLength(kind==='abandonment'?1:0);
 });

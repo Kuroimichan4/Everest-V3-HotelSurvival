@@ -1,0 +1,37 @@
+import {afterEach,expect,test,vi} from 'vitest';
+import type {RoomReply} from '@everest/shared';
+import {RoomManager} from './manager.js';
+import type {SimulationState} from '../simulation/state.js';
+const managers:RoomManager[]=[];afterEach(()=>managers.splice(0).forEach(m=>m.dispose()));
+const value=<T>(r:RoomReply<T>)=>{if(!r.ok)throw new Error(r.error);return r.value;};
+function fixture(){
+ const random=vi.fn(()=>.99);const m=new RoomManager(()=>0,{now:()=>1000,schedule:()=>()=>{}},random);managers.push(m);const sessions=[value(m.create('s0','Host'))];const code=sessions[0]!.room.code;for(let i=1;i<4;i++)sessions.push(value(m.join('s'+i,'Person '+i,code)));m.start('s0');
+ const game=()=>(m as unknown as {rooms:Map<string,{game:{state:SimulationState;structuralReports?:Map<number,Set<string>>}}>}).rooms.get(code)!.game;
+ const vote=(optionId:string,ids=[0,1,2])=>{const v=m.publicVote(code)!;for(const i of ids)expect(m.vote('s'+i,{decisionId:v.decisionId,attemptId:v.attemptId,optionId}).ok).toBe(true);};
+ const projection=<T>(payload:T,socket='s1')=>m.sessionProjection(socket,payload);const toTwo=()=>{vote('abandon');expect(m.advanceRound('s0').ok).toBe(true);};
+ const energize=()=>{game().state={...game().state,characters:game().state.characters.map(c=>({...c,energy:100}))};};
+ return{m,sessions,code,game,vote,projection,toTwo,energize,random};
+}
+test('before route vote all four sessions lack structural categories, including hidden ventilation',()=>{
+ const f=fixture();f.toTwo();for(let i=0;i<4;i++){const v=f.projection(f.m.roundTwoView(f.code)!,'s'+i);expect(v.routeChoice!.options.every(o=>o.danger===undefined)).toBe(true);expect(v.routeChoice!.privateRoute!==undefined).toBe(i===3);if(i!==3)expect(JSON.stringify(v)).not.toContain('"id":"ventilation"');expect(JSON.stringify(v)).not.toMatch(/"danger"|"realRisk"|"riskCategory"|accidentProbability|"probability"/);}
+ expect(f.game().structuralReports?.has(2)??false).toBe(false);
+});
+test('revelation and structural report are separate: revealing before opening gives no risk, opening gives only architect risk',()=>{
+ const f=fixture();f.toTwo();expect(f.m.routeAction('s3','reveal').ok).toBe(true);const before=f.projection(f.m.roundTwoView(f.code)!);expect(before.routeChoice!.options).toHaveLength(3);expect(before.routeChoice!.options.every(o=>o.danger===undefined)).toBe(true);
+ expect(f.m.routeAction('s0','open').ok).toBe(true);const current=f.m.publicVote(f.code)!;for(let i=0;i<4;i++){const v=f.projection(f.m.roundTwoView(f.code)!,'s'+i);expect(v.routeChoice!.options.every(o=>o.danger!==undefined)).toBe(i===1);expect(JSON.stringify(v)).not.toMatch(/accidentProbability|"probability"|0\.55|0\.35|0\.2/);}expect(f.projection(f.m.roundTwoView(f.code)!).routeChoice!.options.find(o=>o.id==='ventilation')!.danger).toBe('LOW');expect(f.game().structuralReports!.get(2)!.has(current.decisionId)).toBe(true);
+});
+test('opening a vote never reveals ventilation automatically and F5 preserves the round permission',()=>{
+ const f=fixture();f.toTwo();f.m.routeAction('s0','open');const before=f.projection(f.m.roundTwoView(f.code)!);expect(before.routeChoice!.options).toHaveLength(2);expect(before.routeChoice!.options.every(o=>o.danger!==undefined)).toBe(true);expect(JSON.stringify(before)).not.toContain('"id":"ventilation"');f.m.disconnect('s1');expect(f.m.resume('restored',f.sessions[1]!.credential).ok).toBe(true);expect(f.projection(f.m.roundTwoView(f.code)!,'restored')).toEqual(before);
+});
+test('a later revealed route in a recovery preparation uses its already opened round, without unlocking another round',()=>{
+ const f=fixture();f.toTwo();f.game().state={...f.game().state,characters:f.game().state.characters.map((c,i)=>({...c,energy:[40,45,40,45][i]!}))};f.m.routeAction('s0','open');f.vote('shoring');const decision=f.m.roundTwoView(f.code)!.routeChoice!.result!.decisionId;f.vote('rescue');expect(f.m.roundTwoView(f.code)!.recovery).toBeDefined();expect(f.m.retryRoute('s0',{decisionId:decision}).ok).toBe(true);expect(f.m.routeAction('s3','reveal').ok).toBe(true);expect(f.projection(f.m.roundTwoView(f.code)!).routeChoice!.options.find(o=>o.id==='ventilation')!.danger).toBe('LOW');expect(f.game().state.routeRevelations).toHaveLength(1);expect(f.game().structuralReports!.has(3)).toBe(false);
+});
+test('each route round unlocks independently; NPC vote at round six is insufficient and old reports stay legitimate',()=>{
+ const f=fixture();f.toTwo();f.m.routeAction('s3','reveal');f.m.routeAction('s0','open');f.vote('ventilation');f.vote('abandon');f.m.openTransport('s0',{preparationId:f.m.transportView(f.code)!.cases.at(-1)!.preparationId});expect(f.m.roundThreeAction('s0','advance').ok).toBe(true);
+ const pair=f.projection([f.m.roundTwoView(f.code)!,f.m.roundThreeView(f.code)!]);expect(pair[0]!.round===2&&'routeChoice' in pair[0]!&&pair[0]!.routeChoice!.options.every(o=>o.danger!==undefined)).toBe(true);expect(f.projection(f.m.roundThreeView(f.code)!).options.every(o=>o.danger===undefined)).toBe(true);f.m.roundThreeAction('s0','open');expect(f.projection(f.m.roundThreeView(f.code)!).options.every(o=>o.danger!==undefined)).toBe(true);f.vote('pipe-gallery');
+ for(const round of [4,5] as const){f.energize();expect(f.m.intermediateAction('s0',{round,action:'advance'}).ok).toBe(true);let view=f.projection(f.m.intermediateSession('s1')!).at(-1)!;expect(view.options).toHaveLength(2);expect(view.options.every(o=>o.danger===undefined)).toBe(true);f.m.intermediateAction('s3',{round,action:'reveal'});view=f.projection(f.m.intermediateSession('s1')!).at(-1)!;expect(view.options).toHaveLength(3);expect(view.options.every(o=>o.danger===undefined)).toBe(true);f.m.intermediateAction('s0',{round,action:'open'});expect(f.projection(f.m.intermediateSession('s1')!).at(-1)!.options.every(o=>o.danger!==undefined)).toBe(true);f.vote(round===4?'cracked-stairs':'collapsed-kitchen');}
+ f.energize();f.random.mockReturnValue(.6);expect(f.m.roundFourAction('s0','advance').ok).toBe(true);expect(f.projection(f.m.roundFourView(f.code)!).npc.vote!.status).toBe('open');expect(f.projection(f.m.roundFourView(f.code)!).options.every(o=>o.danger===undefined)).toBe(true);f.vote('assist');expect(f.projection(f.m.roundFourView(f.code)!).options.every(o=>o.danger===undefined)).toBe(true);f.m.roundFourAction('s0','open');expect(f.projection(f.m.roundFourView(f.code)!).options.every(o=>o.danger!==undefined)).toBe(true);expect([...f.game().structuralReports!.keys()].sort()).toEqual([2,3,4,5,6]);
+});
+test('three fatal victims terminate a three-human movement and preserve private personal accident messages',()=>{
+ const f=fixture();f.toTwo();f.game().state={...f.game().state,characters:f.game().state.characters.map((c,i)=>({...c,health:10,...(i===3?{eliminated:true}:{})}))};f.random.mockReturnValue(0);f.m.routeAction('s0','open');f.vote('unstable-corridor',[0,1]);f.vote('abandon',[0,1]);f.m.openTransport('s0',{preparationId:f.m.transportView(f.code)!.cases.at(-1)!.preparationId});expect(f.m.finalResult(f.code)).toMatchObject({kind:'no-active-humans',counts:{dead:3,abandoned:1,evacuated:0}});for(const i of [0,1,2]){expect(f.m.personalDeathSession('s'+i)!.kind).toBe('accident');expect(f.m.privateRole('s'+i)).toBeNull();}expect(f.m.personalDeathSession('s3')).toBeNull();expect(f.game().state.medicalSabotage).toBeUndefined();
+});

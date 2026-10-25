@@ -1,3 +1,15 @@
+import { personalDeathMessage } from "./personal-death.js";
+import { RoomChat } from './chat.js';
+import type { ChatView, ChatReply } from '@everest/shared';
+import type { PersonalDeathMessage } from "@everest/shared";
+import { manipulateMedication } from "../simulation/medical-sabotage.js";
+import type { MedicalSabotageReply, PrivateMedicalSabotage } from "@everest/shared";
+import { roundTwoMovementCost } from "../simulation/routes.js";
+import { randomInt } from "node:crypto";
+import { sectorWasEvacuated } from "../simulation/transport-crisis.js";
+import type { TransportCrisisServices } from "./transport.js";
+import { IntermediateStage } from "./intermediate.js";
+import { prepareIntermediateRound, internalIntermediateRoute, resolveIntermediateRoute, type IntermediateState, type IntermediateRound } from "../simulation/intermediate-rounds.js";
 import { collectObjectiveLedger, recordMaintenanceRevelation, type ObjectiveLedger, type EvidenceContext } from "../simulation/objective-evidence.js";
 import { projectForParticipant } from "./privacy.js";
 import { buildFinalResult, objectiveEvidence } from "../simulation/final-result.js";
@@ -12,9 +24,9 @@ import { classifyMovement, routeEnergyAvailability, type TransportPlan } from ".
 import { prepareRoundOne } from "../simulation/round-one.js";
 import type { TransportView, RouteActionReply as TransportActionReply } from "@everest/shared";
 import { beginRoundThree, resolveRoundThreeChoice } from "../simulation/round-three.js";
-import { publicRoundThreeRouteViews } from "../simulation/round-three-routes.js";
+import { internalRoundThreeRisk, publicRoundThreeRouteViews } from "../simulation/round-three-routes.js";
 import type { RoundThreeView, RoundThreeRouteId } from "@everest/shared";
-import { publicRouteViews, privateRouteViews, checkRouteRequirements } from "../simulation/routes.js";
+import { internalRouteRisk, publicRouteViews, privateRouteViews, checkRouteRequirements } from "../simulation/routes.js";
 import type { RouteId, RouteChoiceView, RouteActionReply } from "@everest/shared";
 import type { RoundTwoView } from "@everest/shared";
 import { beginRoundTwo, resolveRoundTwo } from "../simulation/round-two.js";
@@ -37,11 +49,14 @@ import type { PackInput, PackReply, SuppliesView } from "@everest/shared";
 import type { MedicalView, TreatmentInput, TreatmentReply } from "@everest/shared";
 
 interface Game {
+  structuralReports?: Map<number, Set<string>>;
+  personalDeaths?: Map<string,PersonalDeathMessage>;
   finalResult?: GameFinalResult;
   objectiveLedger?: ObjectiveLedger;
   finalObjectives?: Map<string, PrivateObjectiveEvidence>;
   roundTwoNpcStarted?: boolean;
   roundFour?: RoundFourStage;
+  intermediates?: Map<IntermediateRound, IntermediateStage>;
   roundThreeSummary?: RoundThreeView;
   activities?: GameActivityView["entries"];
   recovery?: RouteRecovery & { preparationId: string };
@@ -62,6 +77,7 @@ interface Game {
   state: SimulationState;
 }
 interface Room {
+  chat?: RoomChat;
   code: string;
   creatorId: string;
   participants: Participant[];
@@ -78,21 +94,58 @@ function validCode(code: unknown): code is string {
 
 /** Provisional de desarrollo: una instancia por servidor, sin persistencia ni estado global. */
 export class RoomManager {
+  chatSession(socketId: string): ChatView | null {
+    const connection = this.connections.get(socketId); if (!connection) return null;
+    const { room, participant } = connection;
+    const chat = room.chat ??= new RoomChat();
+    const character = room.game?.state.characters.find(c => c.id === participant.characterId);
+    return { code: room.code, sequence: chat.sequence, messages: structuredClone(chat.messages),
+      canWrite: !room.game || (!room.game.finalResult && !!character && isAlive(character)), nextRequestId: chat.nextRequest(participant.id) };
+  }
+  sendChat(socketId: string, input: unknown): ChatReply {
+    const connection = this.connections.get(socketId); const view = this.chatSession(socketId);
+    if (!connection || !view) return { ok: false, error: 'invalid-session' };
+    const { room, participant } = connection;
+    const role = room.game?.state.characters.find(c => c.id === participant.characterId)?.role;
+    return room.chat!.send(input, { kind: 'human', participantId: participant.id, name: participant.name,
+      ...(role ? { role } : {}) }, this.clock.now(), view.canWrite);
+  }
   private readonly rooms = new Map<string, Room>();
   private readonly connections = new Map<string, { room: Room; participant: Participant }>();
 
   onVotingChanged: (code: string) => void = () => {};
+  onRoomChanged: (room: PublicRoom) => void = () => {};
   onSuppliesChanged: (code: string) => void = () => {};
   onFinished: (code: string) => void = () => {};
   constructor(private readonly randomIndex?: RandomIndex, private readonly clock: VotingClock = systemClock,
-    private readonly routeRandom: RandomSource = Math.random) {}
+    private readonly routeRandom: RandomSource = Math.random, private readonly medicalRandom: RandomSource = Math.random, private readonly narrativeRandom: RandomSource = Math.random) {}
 
+  private recordStructuralReports(game:Game) {
+    const decisions:[number,RoomVoting|undefined][]=[[2,game.route?.voting],[3,game.roundThree?.voting],
+      [4,game.intermediates?.get(4)?.voting],[5,game.intermediates?.get(5)?.voting],[6,game.roundFour?.exitVoting]];
+    for(const [round,voting] of decisions){
+      if(!voting||round>game.state.currentRound)continue;
+      const vote=voting.publicView();if(vote.round!==round)continue;
+      const reports=game.structuralReports??=new Map();const ids=reports.get(round)??new Set<string>();
+      ids.add(vote.decisionId);reports.set(round,ids);
+    }
+  }
   private finishIfTerminal(room: Room) {
     const game = room.game;
+    if (game) this.recordStructuralReports(game);
     if (!game || game.finalResult || game.resolvingMovement) return;
+    for (const participant of room.participants) {
+      if (!participant.characterId || game.personalDeaths?.has(participant.characterId)) continue;
+      const message = personalDeathMessage(game.state, game.id, participant.characterId, participant.id);
+      if (message) (game.personalDeaths ??= new Map()).set(participant.characterId, message);
+    }
     const result = buildFinalResult(game.state, room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })),
       { id: newId(), gameId: game.id, closedAt: this.clock.now(), ventilationRevealed: game.route?.revealed ?? false });
-    if (!result) return;
+    if (!result) {
+      // Resolve the complete movement before handing over authority; terminal games need no successor.
+      this.reassignInactiveHost(room);
+      return;
+    }
     game.finalResult = result;
     const context: EvidenceContext = {
       treatments: [...game.treatmentRequests].map(([requestId, r]) => ({ requestId, round: r.round, patientId: r.targetParticipantId, administratorId: r.actorId })),
@@ -103,6 +156,7 @@ export class RoomManager {
     game.objectiveLedger = collectObjectiveLedger(game.state, result, context);
     game.finalObjectives = new Map(room.participants.map(p => [p.id, objectiveEvidence(game.state, result, p.characterId!, context, game.objectiveLedger)]));
     game.voting.dispose(); game.route?.voting?.dispose(); game.roundThree?.voting?.dispose(); game.roundFour?.dispose();
+    game.intermediates?.forEach(stage => stage.dispose());
     game.transports?.forEach(t => t.dispose());
     this.onFinished(room.code);
   }
@@ -119,7 +173,7 @@ export class RoomManager {
   }
   objectiveSession(socketId: string): PrivateObjectiveEvidence | null {
     const connection = this.connections.get(socketId);
-    if (!connection || !this.privateRole(socketId)) return null;
+    if (!connection?.participant.characterId || (!this.privateRole(socketId) && connection.room.game?.state.characters.find(c => c.id === connection.participant.characterId)?.role !== "bellhop")) return null;
     const evidence = connection.room.game?.finalObjectives?.get(connection.participant.id);
     return evidence ? structuredClone(evidence) : null;
   }
@@ -127,15 +181,44 @@ export class RoomManager {
     const connection = this.connections.get(socketId);
     if (!connection) throw new Error("Una proyección requiere sesión autenticada");
     const actor = connection.room.game?.state.characters.find(c => c.id === connection.participant.characterId);
-    return projectForParticipant(payload, connection.participant.id, !!actor && isAlive(actor) && actor.role === "medic");
+    let outgoing = payload;
+    const game = connection.room.game;
+    if (game) this.recordStructuralReports(game);
+    if (game && payload && typeof payload === "object" && "windowId" in payload && "characters" in payload && "gameId" in payload) {
+      const supplies = payload as unknown as SuppliesView;
+      const transport = game.transports?.findLast(t => t.route.round === game.state.currentRound && t.phase !== "superseded")?.view();
+      const medicalOpen = !game.finalResult && (game.state.currentRound <= 3 || supplies.windowId !== null);
+      const characters = supplies.characters.map(person => {
+        const human = game.state.characters.find(c => c.id === connection.room.participants.find(p => p.id === person.participantId)?.characterId)!;
+        return { ...person, role: human.role, status: human.eliminated ? "abandoned" as const : human.health <= 0 ? "dead" as const
+          : transport?.transportedIds.includes(person.participantId) ? "transported" as const
+          : human.energy === 0 || transport?.exhaustedIds.includes(person.participantId) ? "exhausted" as const : "active" as const };
+      });
+      const resourceActions = supplies.characters.map(person => {
+        const human = game.state.characters.find(c => c.id === connection.room.participants.find(p => p.id === person.participantId)?.characterId)!;
+        const packReason = !isAlive(human) ? "character-dead" : !supplies.windowId ? "supplies-not-open" : game.state.inventory.packs <= 0 ? "no-packs" : human.energy >= 100 ? "energy-full" : null;
+        const medicalReason = !isAlive(human) ? "character-dead" : !medicalOpen ? "supplies-not-open" : game.state.inventory.medicalUnits <= 0 ? "no-medical-units" : human.health >= 100 ? "health-full-pending"
+          : game.state.medicalTreatments?.some(t => t.round === game.state.currentRound && t.characterId === human.id) ? "treatment-used" : null;
+        return { participantId: person.participantId,
+          ...(actor && isAlive(actor) && actor.role === "bellhop" ? { packEligibility: { allowed: packReason === null, reason: packReason } } : {}),
+          ...(actor && isAlive(actor) && actor.role === "medic" ? { medicalEligibility: { allowed: medicalReason === null, reason: medicalReason } } : {}) };
+      });
+      outgoing = { ...supplies, characters, ...(actor && isAlive(actor) && (actor.role === "bellhop" || actor.role === "medic") ? { resourceActions } : {}) } as T;
+    }
+    if (actor && isAlive(actor) && actor.role === "maintenance" && payload && typeof payload === "object" && "routeChoice" in payload) {
+      const round = payload as unknown as RoundTwoView;
+      if (round.routeChoice && !round.routeChoice.ventilationRevealed) outgoing = { ...round, routeChoice: { ...round.routeChoice, privateRoute: privateRouteViews("maintenance")[0]! } } as T;
+    }
+    return projectForParticipant(outgoing, connection.participant.id, !!actor && isAlive(actor) && actor.role === "medic", !!actor && isAlive(actor) && actor.role === "architect-engineer", !!actor && isAlive(actor) && actor.role === "bellhop", Object.fromEntries((game?.state.characters ?? []).map(c => [connection.room.participants.find(p => p.characterId === c.id)!.id, c.role])), new Set(game?.structuralReports?.keys() ?? []));
   }
 
-  dispose(): void { for (const room of this.rooms.values()) { room.game?.transports?.forEach(t => t.dispose()); room.game?.roundFour?.dispose(); room.game?.voting.dispose(); room.game?.route?.voting?.dispose(); room.game?.roundThree?.voting?.dispose(); } }
+  dispose(): void { for (const room of this.rooms.values()) { room.game?.intermediates?.forEach(stage => stage.dispose()); room.game?.transports?.forEach(t => t.dispose()); room.game?.roundFour?.dispose(); room.game?.voting.dispose(); room.game?.route?.voting?.dispose(); room.game?.roundThree?.voting?.dispose(); } }
   private activeVoting(game: Game): RoomVoting | null {
-    if (game.finalResult) return null;
+    if (game.finalResult || sectorWasEvacuated(game.state)) return null;
     const transport = game.transports?.findLast(t => t.route.round === game.state.currentRound && t.phase !== "superseded");
     if (transport?.route.round === game.state.currentRound && transport.phase !== "completed" && transport.voting) return transport.voting;
-    if (game.state.currentRound === 4) return game.roundFour?.activeVoting() ?? null;
+    if (game.state.currentRound === 4 || game.state.currentRound === 5) return game.intermediates?.get(game.state.currentRound)?.voting ?? null;
+    if (game.state.currentRound === 6) return game.roundFour?.activeVoting() ?? null;
     if (game.state.currentRound === 2) return game.route?.result ? game.roundTwoNpcStarted ? game.voting : null : game.route?.voting ?? null;
     return game.state.currentRound === 3 ? game.roundThree?.voting ?? null : game.route?.voting ?? game.voting;
   }
@@ -159,7 +242,14 @@ export class RoomManager {
     if (room.game!.finalResult) return { ok: false, error: "game-finished" };
     const transport = room.game!.transports?.findLast(t => t.route.round === room.game!.state.currentRound && t.phase !== "superseded");
     if (transport?.route.round === room.game!.state.currentRound && transport.phase !== "completed" && transport.voting) return transport.vote(participant.id, input);
-    if (room.game!.state.currentRound === 4) return room.game!.roundFour!.vote(participant.id, input);
+    if (room.game!.state.currentRound === 4 || room.game!.state.currentRound === 5) {
+      const stage = room.game!.intermediates?.get(room.game!.state.currentRound);
+      const candidate = input as { optionId?: string } | null;
+      const route = typeof candidate?.optionId === "string" ? internalIntermediateRoute(candidate.optionId) : null;
+      if (!route || route.round !== room.game!.state.currentRound || routeEnergyAvailability(room.game!.state, route.energyCost).status === "unavailable") return { ok: false, error: "invalid-option" };
+      return stage?.voting?.vote(participant.id, input) ?? { ok: false, error: "route-not-open" };
+    }
+    if (room.game!.state.currentRound === 6) return room.game!.roundFour!.vote(participant.id, input);
     const voting = this.activeVoting(room.game!);
     if (voting && input && typeof input === "object") {
       const candidate = input as { decisionId?: string; optionId?: string };
@@ -285,15 +375,64 @@ export class RoomManager {
     if (participant.id !== room.creatorId) return { ok: false, error: "not-creator" };
     const game = room.game!;
     if (!game.state.characters.some(c => c.id === participant.characterId && isAlive(c))) return { ok: false, error: "not-authorized" };
-    const next = beginRoundTwo(game.state);
-    if (next === game.state) return { ok: false, error: "round-not-ready" };
-    if (!next.characters.some(isAlive)) return { ok: false, error: "no-living-characters-pending" };
-    game.roundOneSummary = this.roundSummary(room.code)!;
-    game.voting.dispose();
-    game.state = next;
-    game.route = { preparationId: newId(), revealed: false, result: null };
+    const error = this.activateRound(room, 2);
+    if (error) return { ok: false, error };
     this.publishVoting(room);
     return { ok: true, own: game.voting.ownView(participant.id) };
+  }
+
+
+  private activateRound(room: Room, target: 2|3|4|5|6): string | null {
+    const game = room.game!;
+    if (game.state.currentRound + 1 !== target) return target === 6 ? "round-four-not-ready" : "round-not-ready";
+    if (!game.state.characters.some(isAlive)) return "no-living-characters";
+    if (target === 2) {
+      const next = beginRoundTwo(game.state); if (next === game.state) return "round-not-ready";
+      const summary = this.roundSummary(room.code); if (summary) game.roundOneSummary = summary;
+      game.state = next; game.route = { preparationId: newId(), revealed: false, result: null };
+    } else if (target === 3) {
+      const next = beginRoundThree(game.state); if (next === game.state) return "round-not-ready";
+      game.roundTwoSummary = this.roundTwoView(room.code)!; game.state = next;
+      game.roundThree = { preparationId: newId(), selection: null, earthquake: false, blockedRoutes: [] };
+    } else if (target === 4 || target === 5) {
+      const completed = target === 4 ? game.state.roundThreeRoute?.status === "completed"
+        : game.state.intermediateRounds?.some(r => r.round === 4 && r.status === "completed");
+      if (!completed && !sectorWasEvacuated(game.state)) return "round-not-ready";
+      if (target === 4) game.roundThreeSummary = this.roundThreeView(room.code)!;
+      else game.intermediates?.get(4)?.archive();
+      game.state = prepareIntermediateRound(game.state, target);
+      const stage = new IntermediateStage(target, () => game.state as IntermediateState, state => { game.state = state; },
+        room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })),
+        this.clock, () => this.publishVoting(room), () => this.moveIntermediate(room));
+      (game.intermediates ??= new Map()).set(target, stage);
+    } else {
+      const next = beginRoundFour(game.state, this.routeRandom); if (!next.ok) return next.error;
+      game.intermediates?.get(5)?.archive(); game.state = next.state;
+      game.roundFour = new RoundFourStage(() => game.state as RoundFourState, state => { game.state = state; },
+        room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })),
+        this.clock, () => this.publishVoting(room), () => this.moveFourth(room));
+    }
+    game.voting.dispose(); game.route?.voting?.dispose(); game.roundThree?.voting?.dispose();
+    return null;
+  }
+  private reassignInactiveHost(room: Room) {
+    const state = room.game!.state;
+    const active = room.participants.filter(p => state.characters.some(c => c.id === p.characterId && isAlive(c)));
+    // The new host remains active, making subsequent publications and refreshes idempotent.
+    if (!active.length || active.some(p => p.id === room.creatorId)) return;
+    room.creatorId = active[(this.randomIndex ?? randomInt)(active.length)]!.id;
+    this.onRoomChanged(this.publicRoom(room));
+  }
+  private transportCrisis(room: Room): TransportCrisisServices {
+    const game = room.game!;
+    return { readActual: () => game.state, commit: state => { game.state = state; },
+      evacuateSector: (state, incidentId, routeId) => {
+        if (state.currentRound === 6 || state.sectorEvacuations?.some(r => r.incidentId === incidentId)) return;
+        const round = state.currentRound;
+        game.state = { ...state, sectorEvacuations: [...(state.sectorEvacuations ?? []), { round, incidentId, routeId, at: this.clock.now() }] };
+        delete game.recovery;
+        if (game.state.characters.some(isAlive)) this.activateRound(room, (round + 1) as 2|3|4|5|6);
+      } };
   }
 
   private startRoundTwoNpc(room: Room) {
@@ -308,8 +447,8 @@ export class RoomManager {
   private routeOptions(game: Game): RouteChoiceView["options"] {
     return [...publicRouteViews(), ...(game.route?.revealed ? privateRouteViews("maintenance") : [])].map(option => {
       const check = checkRouteRequirements(game.state, option.id);
-      const availability = check.ok ? routeEnergyAvailability(game.state, option.energyCost) : { status: "unavailable" as const, reason: check.error };
-      return { ...option, blocked: availability.reason, availability };
+      const availability = check.ok ? routeEnergyAvailability(game.state, roundTwoMovementCost(option.id)) : { status: "unavailable" as const, reason: check.error };
+      return { ...option, danger: internalRouteRisk(option.id)!, blocked: availability.reason, availability };
     });
   }
   private routeView(game: Game): RouteChoiceView | null {
@@ -358,7 +497,9 @@ export class RoomManager {
 
   private moveOrPrepare(room: Room): void {
     const game = room.game!;
-    if (game.state.currentRound === 4) { this.moveFourth(room); return; }
+    if (sectorWasEvacuated(game.state)) return;
+    if (game.state.currentRound === 6) { this.moveFourth(room); return; }
+    if (game.state.currentRound === 4 || game.state.currentRound === 5) { this.moveIntermediate(room); return; }
     if (game.state.currentRound === 2 && !game.state.roundTwo?.resolution) return;
     if (game.transports?.some(t => t.route.round === game.state.currentRound && t.phase !== "superseded")) return;
     if (game.recovery) return;
@@ -369,13 +510,14 @@ export class RoomManager {
     const route = round === 1 ? { id, name: "Paso obligatorio de ronda 1", energyCost: MOVEMENT_ENERGY["round-one-passage"] }
       : round === 2 ? [...publicRouteViews(), ...privateRouteViews("maintenance")].find(r => r.id === id)!
       : this.roundThreeOptions(game).find(r => r.id === id)!;
-    const availability = routeEnergyAvailability(game.state, route.energyCost);
+    const effort = round === 2 ? roundTwoMovementCost(id) : route.energyCost;
+    const availability = routeEnergyAvailability(game.state, effort);
     if (round !== 1 && availability.status === "unavailable") { this.markRecovery(room, availability.reason!); return; }
-    const classification = classifyMovement(game.state, route.energyCost);
+    const classification = classifyMovement(game.state, effort);
     if (classification.ok && (round === 2 || classification.classification.transportRequiredIds.length)) {
-      const decision = new TransportDecision({ round, id, name: route.name, cost: route.energyCost }, () => game.state,
+      const decision = new TransportDecision({ round, id, name: route.name, cost: route.energyCost, effort }, () => game.state,
         (state, plan) => this.executeMovement(room, state, plan), this.clock, () => { this.noteTransportFailure(room); this.publishVoting(room); },
-        room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })));
+        room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })), this.transportCrisis(room));
       (game.transports ??= []).push(decision);
     } else this.executeMovement(room, game.state);
   }
@@ -386,7 +528,7 @@ export class RoomManager {
   }
   private markRecovery(room: Room, reason: string): void {
     const game = room.game!;
-    if (game.recovery || game.state.currentRound === 1 || game.state.currentRound === 4) return;
+    if (game.recovery || (game.state.currentRound !== 2 && game.state.currentRound !== 3)) return;
     const choice = game.state.currentRound === 2 ? game.route?.result : game.roundThree?.selection;
     if (!choice) return;
     game.recovery = { decisionId: choice.decisionId, reason, forced: choice.outcome === "NO_AGREEMENT", preparationId: newId() };
@@ -399,7 +541,7 @@ export class RoomManager {
   }
   private discoverRecovery(room: Room) {
     const game = room.game!;
-    if (game.recovery || game.resolvingMovement || game.state.currentRound === 1 || game.state.currentRound === 4) return;
+    if (game.recovery || game.resolvingMovement || (game.state.currentRound !== 2 && game.state.currentRound !== 3)) return;
     const movement = game.state.currentRound === 2 ? game.state.roundTwo?.movement : game.state.roundThreeRoute;
     if (movement?.status === "blocked" && ["insufficient-energy", "transport-vote-pending", "transport-plan-infeasible"].includes(movement.error)) this.markRecovery(room, movement.error);
     else this.noteTransportFailure(room);
@@ -417,7 +559,7 @@ export class RoomManager {
     }
     this.discoverRecovery(room);
     if (game.failedSelections?.some(f => f.decisionId === decisionId)) return { ok: true };
-    if (!game.recovery || game.recovery.decisionId !== decisionId || game.state.currentRound === 1 || game.state.currentRound === 4) return { ok: false, error: "route-not-recoverable" };
+    if (!game.recovery || game.recovery.decisionId !== decisionId || (game.state.currentRound !== 2 && game.state.currentRound !== 3)) return { ok: false, error: "route-not-recoverable" };
     const recovery = game.recovery;
     if (recovery.forced) {
       const cost = game.state.currentRound === 2 ? MOVEMENT_ENERGY["unstable-corridor"] : MOVEMENT_ENERGY["pipe-gallery"];
@@ -455,6 +597,7 @@ export class RoomManager {
 
   private executeMovement(room: Room, state: SimulationState, plan?: TransportPlan): string | null {
     const game = room.game!;
+    if (sectorWasEvacuated(state)) return "sector-already-evacuated";
     game.resolvingMovement = true;
     game.state = state; // Los abandonos ya aprobados son definitivos incluso ante un bloqueo posterior.
     try {
@@ -498,20 +641,14 @@ export class RoomManager {
     if (game.finalResult) return { ok: true };
     if (action === "advance") {
       if (game.roundFour) return { ok: true };
-      const next = beginRoundFour(game.state, this.routeRandom);
-      if (!next.ok) return { ok: false, error: next.error };
-      game.roundThreeSummary = this.roundThreeView(room.code)!;
-      game.voting.dispose(); game.route?.voting?.dispose(); game.roundThree?.voting?.dispose();
-      game.state = next.state;
-      game.roundFour = new RoundFourStage(() => game.state as RoundFourState, state => { game.state = state; },
-        room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })),
-        this.clock, () => this.publishVoting(room), () => this.moveFourth(room));
+      const error = this.activateRound(room, 6);
+      if (error) return { ok: false, error };
     } else {
-      if (game.state.currentRound !== 4 || !game.roundFour) return { ok: false, error: "round-not-ready" };
+      if (game.state.currentRound !== 6 || !game.roundFour) return { ok: false, error: "round-not-ready" };
       if (action === "open") return game.roundFour.open();
       if (!input || typeof input !== "object" || Object.keys(input).join(",") !== "preparationId"
         || typeof (input as { preparationId: unknown }).preparationId !== "string") return { ok: false, error: "invalid-input" };
-      const transport = game.transports?.findLast(t => t.route.round === 4 && t.phase !== "superseded");
+      const transport = game.transports?.findLast(t => t.route.round === 6 && t.phase !== "superseded");
       if (transport && (transport.phase === "voting" || transport.phase === "selection" || transport.phase === "pending")) return { ok: false, error: "transport-vote-pending" };
       return game.roundFour.retry((input as { preparationId: string }).preparationId);
     }
@@ -528,13 +665,13 @@ export class RoomManager {
     const preview = prepareRescueEffort(state);
     if (!preview.ok) { stage.blocked = preview.error; return; }
     if (route.availability.status === "unavailable") { stage.blocked = route.availability.reason; return; }
-    const previous = game.transports?.findLast(t => t.route.round === 4 && t.phase !== "superseded");
+    const previous = game.transports?.findLast(t => t.route.round === 6 && t.phase !== "superseded");
     if (previous?.phase === "preparation" || previous?.phase === "voting" || previous?.phase === "selection" || previous?.phase === "pending") return;
     if (previous) previous.supersede();
     stage.blocked = null;
     const classified = classifyMovement(preview.state, route.energyCost);
     if (classified.ok && classified.classification.transportRequiredIds.length) {
-      const transport = new TransportDecision({ round: 4, id: routeId, name: route.name, cost: route.energyCost },
+      const transport = new TransportDecision({ round: 6, id: routeId, name: route.name, cost: route.energyCost },
         () => { const result = prepareRescueEffort(game.state as RoundFourState); return result.ok ? result.state : game.state; },
         (prospective, plan) => {
           // El transporte estudia energías residuales, pero 9A cobra desde el estado real.
@@ -547,7 +684,7 @@ export class RoomManager {
             }) };
           return this.executeFourth(room, candidate, routeId, plan);
         }, this.clock, () => this.publishVoting(room),
-        room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })));
+        room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })), this.transportCrisis(room));
       (game.transports ??= []).push(transport);
     } else this.executeFourth(room, state, routeId);
   }
@@ -567,7 +704,7 @@ export class RoomManager {
     const state = game.state as RoundFourState; const stage = game.roundFour;
     if (!stage || state.roundFour.exit || state.roundFour.blockedMovement || game.resolvingMovement) return null;
     if (stage.activeVoting()?.publicView().status === "open") return null;
-    const transport = game.transports?.findLast(t => t.route.round === 4 && t.phase !== "superseded");
+    const transport = game.transports?.findLast(t => t.route.round === 6 && t.phase !== "superseded");
     if (transport) return transport.phase === "preparation" ? transport.preparationId : transport.phase === "blocked" ? stage.preparationId : null;
     return stage.preparationId;
   }
@@ -575,7 +712,7 @@ export class RoomManager {
   roundFourView(code: string): RoundFourView | null {
     const game = this.rooms.get(code)?.game;
     if (!game?.roundFour) return null;
-    const transport = game.transports?.findLast(t => t.route.round === 4 && t.phase !== "superseded");
+    const transport = game.transports?.findLast(t => t.route.round === 6 && t.phase !== "superseded");
     const view = game.roundFour.view(!!transport && transport.phase !== "completed" && transport.phase !== "blocked");
     if (!view.movement && transport?.phase === "blocked") {
       view.phase = "blocked"; view.blocked = view.blocked ?? transport.reason;
@@ -604,13 +741,91 @@ export class RoomManager {
     return decision.open((input as { preparationId: string }).preparationId);
   }
 
+
+  intermediateAction(socketId: string, input: unknown): RouteActionReply {
+    const connection = this.connections.get(socketId);
+    if (!connection?.room.game) return { ok: false, error: "invalid-session" };
+    const { room, participant } = connection; const game = room.game!;
+    if (game.finalResult) return { ok: false, error: "game-finished" };
+    if (!input || typeof input !== "object" || Object.keys(input).sort().join(",") !== "action,round") return { ok: false, error: "invalid-input" };
+    const { round, action } = input as { round: IntermediateRound; action: string };
+    if ((round !== 4 && round !== 5) || !["advance", "reveal", "open", "retry"].includes(action)) return { ok: false, error: "invalid-input" };
+    const actor = game.state.characters.find(c => c.id === participant.characterId && isAlive(c));
+    if (!actor) return { ok: false, error: "not-authorized" };
+    if ((action === "advance" || action === "open") && participant.id !== room.creatorId) return { ok: false, error: "not-creator" };
+    if (action === "advance") {
+      if (game.state.currentRound === round && game.intermediates?.has(round)) return { ok: true };
+      const error = this.activateRound(room, round);
+      if (error) return { ok: false, error };
+      this.publishVoting(room); return { ok: true };
+    }
+    if (game.state.currentRound !== round) return { ok: false, error: "round-not-ready" };
+    const stage = game.intermediates?.get(round);
+    if (!stage) return { ok: false, error: "round-not-ready" };
+    if (action === "reveal") return stage.reveal(actor.id);
+    if (action === "open") return stage.open();
+    if (!stage.selection()) return { ok: false, error: "route-not-ready" };
+    const transport = game.transports?.findLast(t => t.route.round === round && t.phase !== "superseded");
+    if (transport && ["voting", "selection", "pending"].includes(transport.phase)) return { ok: false, error: "transport-vote-pending" };
+    this.moveIntermediate(room); this.publishVoting(room);
+    return stage.blocked ? { ok: false, error: stage.blocked } : { ok: true };
+  }
+
+  private moveIntermediate(room: Room) {
+    const game = room.game!; const round = game.state.currentRound;
+    if (round !== 4 && round !== 5) return;
+    const stage = game.intermediates!.get(round)!; const selection = stage.selection();
+    if (!selection || sectorWasEvacuated(game.state)) return;
+    const saved = game.state.intermediateRounds?.find(r => r.round === round);
+    if (saved) { stage.blocked = saved.status === "blocked" ? saved.error : null; return; }
+    const route = internalIntermediateRoute(selection.routeId)!;
+    const previous = game.transports?.findLast(t => t.route.round === round && t.phase !== "superseded");
+    if (previous && ["preparation", "voting", "selection", "pending"].includes(previous.phase)) return;
+    const execute = (state: SimulationState, plan?: TransportPlan) => {
+      game.resolvingMovement = true;
+      try {
+        const result = resolveIntermediateRoute(state as IntermediateState, selection.requestId, selection.routeId, this.routeRandom, plan);
+        game.state = result.state; stage.blocked = result.ok ? null : result.error;
+        if (result.ok) stage.captureMovement();
+        return result.ok ? null : result.error;
+      } finally { game.resolvingMovement = false; }
+    };
+    const availability = routeEnergyAvailability(game.state, route.energyCost);
+    if (availability.status === "unavailable") { stage.blocked = availability.reason; return; }
+    if (previous) previous.supersede();
+    stage.blocked = null;
+    const classified = classifyMovement(game.state, route.energyCost);
+    if (classified.ok && classified.classification.transportRequiredIds.length) {
+      (game.transports ??= []).push(new TransportDecision({ round, id: route.id, name: route.name, cost: route.energyCost },
+        () => game.state, execute, this.clock, () => { this.publishVoting(room); },
+        room.participants.map(p => ({ characterId: p.characterId!, participantId: p.id, name: p.name })), this.transportCrisis(room)));
+    } else execute(game.state);
+  }
+
+  private intermediateWindow(game: Game): string | null {
+    const round = game.state.currentRound;
+    if ((round !== 4 && round !== 5) || game.resolvingMovement) return null;
+    const stage = game.intermediates?.get(round); if (!stage) return null;
+    const state = game.state as IntermediateState;
+    if (state.intermediate.phase === "voting"
+      || state.intermediateRounds?.some(r => r.round === round && r.status === "blocked")) return null;
+    const transport = game.transports?.findLast(t => t.route.round === round && t.phase !== "superseded");
+    if (transport && ["voting", "selection", "pending"].includes(transport.phase)) return null;
+    return transport?.phase === "preparation" ? transport.preparationId : stage.preparationId;
+  }
+
+  intermediateSession(socketId: string) {
+    const connection = this.connections.get(socketId);
+    if (!connection?.room.game || !connection.participant.characterId) return null;
+    return [...(connection.room.game.intermediates?.values() ?? [])].map(stage => stage.view(connection.participant.characterId!));
+  }
+
   private roundThreeOptions(game: Game): RoundThreeView["options"] {
-    return publicRoundThreeRouteViews().map(route => ({ ...route,
+    return publicRoundThreeRouteViews().map(route => ({ ...route, danger: internalRoundThreeRisk(route.id)!,
       availability: route.id === "fire-door" && game.state.tools.crowbar !== "available"
         ? { status: "unavailable", reason: "crowbar-unavailable-pending" } : routeEnergyAvailability(game.state, route.energyCost),
-      name: route.id === "pipe-gallery" ? "Galería de tuberías y calderas" : route.id === "metal-debris" ? "Escombros metálicos y almacén" : route.name,
-      description: route.id === "fire-door" ? "Paso por una puerta cortafuegos."
-        : route.id === "pipe-gallery" ? "Paso por la zona de tuberías y calderas." : "Paso entre escombros metálicos hacia el almacén." }));
+      name: route.id === "pipe-gallery" ? "Galería de tuberías y calderas" : route.name,
+      description: route.description }));
   }
 
   roundThreeAction(socketId: string, action: "advance" | "open"): RouteActionReply {
@@ -619,18 +834,14 @@ export class RoomManager {
     if (connection.room.game.finalResult) return { ok: false, error: "game-finished" };
     const { room, participant } = connection;
     const game = room.game!;
-    if (game.state.currentRound === 4) return { ok: false, error: "round-not-ready" };
+    if (game.state.currentRound >= 4) return { ok: false, error: "round-not-ready" };
     if (participant.id !== room.creatorId) return { ok: false, error: "not-creator" };
     const actor = game.state.characters.find(c => c.id === participant.characterId);
     if (!actor || !isAlive(actor)) return { ok: false, error: "not-authorized" };
     if (action === "advance") {
       if (game.state.currentRound === 3 && game.roundThree) return { ok: true };
-      const next = beginRoundThree(game.state);
-      if (next === game.state) return { ok: false, error: "round-not-ready" };
-      game.roundTwoSummary = this.roundTwoView(room.code)!;
-      game.voting.dispose(); game.route?.voting?.dispose();
-      game.state = next;
-      game.roundThree = { preparationId: newId(), selection: null, earthquake: false, blockedRoutes: [] };
+      const error = this.activateRound(room, 3);
+      if (error) return { ok: false, error };
     } else {
       const stage = game.roundThree;
       if (game.state.currentRound !== 3 || !stage) return { ok: false, error: "round-not-ready" };
@@ -670,7 +881,7 @@ export class RoomManager {
       return { participantId: player.id, name: player.name, damage };
     });
     const result = resolution?.status === "completed" ? resolution.outcome : null;
-    return { round: 3, phase: result ? "completed" : resolution ? "blocked" : stage.selection ? "transport" : stage.voting ? "voting" : "preparation",
+    return { round: 3, phase: sectorWasEvacuated(game.state, 3) ? "sector-evacuated" : result ? "completed" : resolution ? "blocked" : stage.selection ? "transport" : stage.voting ? "voting" : "preparation",
       ...this.recoveryView(game, 3),
       options: structuredClone(stage.options ?? this.roundThreeOptions(game)).map(option => stage.blockedRoutes.includes(option.id)
         ? { ...option, availability: { status: "unavailable", reason: "earthquake-blocked-route" } } : option), vote: stage.voting?.publicView() ?? null,
@@ -681,7 +892,7 @@ export class RoomManager {
         gained: { ...result.gained }, crowbarLost: result.crowbarLost, returnBlocked: result.returnBlocked, discovery: result.discovery } : null,
       blocked: resolution?.status === "blocked" ? resolution.error : null,
       afterRoute: stage.afterRoute ? structuredClone(stage.afterRoute) : null,
-      previousNpcs: [{ round: 1, status: game.state.roundOne!.npc }, { round: 2, status: game.state.roundTwo!.resolution!.npc }] };
+      previousNpcs: [{ round: 1, status: game.state.roundOne?.npc ?? "pending" }, { round: 2, status: game.state.roundTwo?.resolution?.npc ?? "pending" }] };
   }
 
   roundThreeSession(socketId: string): RoundThreeView | null {
@@ -703,13 +914,13 @@ export class RoomManager {
       : { status: "completed", decisionId: movement.decisionId, routeId: movement.routeId,
         routeName: [...publicRouteViews(), ...privateRouteViews("maintenance")].find(route => route.id === movement.routeId)!.name,
         forced: movement.forced, microearthquake: movement.microearthquake, accident: movement.accident,
-        energyCost: movement.energyCost, victims: movement.victims.map(victim => {
+        energyCost: movement.energyCost, charges: movement.charges?.map(c => ({ participantId: room.participants.find(p => p.characterId === c.characterId)!.id, energy: c.energyCost, kind: c.kind })), victims: movement.victims.map(victim => {
           const participant = room.participants.find(player => player.characterId === victim.characterId)!;
           return { participantId: participant.id, name: participant.name, damage: victim.damage };
         }) };
     return { ...this.recoveryView(game, 2), movement: movementView, routeChoice: this.routeView(game), round: 2, npcId: round.npcId, mobility: "walks-with-help",
-      npc: resolution?.npc ?? "pending", previousNpc: game.state.roundOne!.npc,
-      phase: movement?.status === "completed" ? "completed" : movement ? "movement-blocked"
+      npc: resolution?.npc ?? "pending", previousNpc: game.state.roundOne?.npc ?? "pending",
+      phase: sectorWasEvacuated(game.state, 2) ? "sector-evacuated" : movement?.status === "completed" ? "completed" : movement ? "movement-blocked"
         : game.transports?.some(t => t.route.round === 2 && t.phase !== "completed") ? "transport-pending" : round.blocked ? "resolution-blocked" : !game.route?.result ? "route-pending" : game.roundTwoNpcStarted && !resolution ? "rescue-vote" : "route-pending",
       blocked: round.blocked, result: resolution?.result ?? (game.roundTwoNpcStarted ? game.voting.publicView().result : null),
       microearthquake: resolution?.microearthquake ?? false,
@@ -754,12 +965,13 @@ export class RoomManager {
     const movement = game.state.roundTwo?.movement;
     const transport = game.transports?.findLast(t => t.route.round === game.state.currentRound && t.phase !== "superseded");
     const transportCurrent = transport?.route.round === game.state.currentRound && transport.phase !== "completed";
-    const windowId = game.finalResult ? null : game.state.currentRound === 4 ? this.fourthWindow(game) : game.resolvingMovement ? null : game.recovery ? game.recovery.preparationId : transportCurrent ? (transport.phase === "preparation" ? transport.preparationId : null) : game.state.currentRound === 1 ? game.state.roundOne?.decisionId ?? null
+    const windowId = game.finalResult ? null : (game.state.currentRound === 4 || game.state.currentRound === 5) ? this.intermediateWindow(game) : game.state.currentRound === 6 ? this.fourthWindow(game) : game.resolvingMovement ? null : game.recovery ? game.recovery.preparationId : transportCurrent ? (transport.phase === "preparation" ? transport.preparationId : null) : game.state.currentRound === 1 ? game.state.roundOne?.decisionId ?? null
       : game.state.currentRound === 2 ? movement?.status === "completed" ? movement.decisionId
         : game.state.roundTwo?.blocked ? game.route?.preparationId ?? null : game.route && !game.route.voting ? game.route.preparationId : null
       : game.state.roundThreeRoute?.status === "completed" ? game.state.roundThreeRoute.outcome.requestId
         : game.roundThree && !game.roundThree.voting ? game.roundThree.preparationId : null;
     return { gameId: game.id, round: game.state.currentRound, windowId,
+      ...(game.state.sectorEvacuations?.find(r => r.round === game.state.currentRound) ? { sectorEvacuation: game.state.sectorEvacuations.find(r => r.round === game.state.currentRound)! } : {}),
       ...(game.state.currentRound === 1 && game.roundOneBlocked ? { movementBlocked: game.roundOneBlocked } : {}),
       inventory: { ...game.state.inventory }, characters: room.participants.map(participant => {
         const character = game.state.characters.find(c => c.id === participant.characterId)!;
@@ -772,11 +984,47 @@ export class RoomManager {
     return connection ? this.suppliesView(connection.room.code) : null;
   }
 
+  personalDeathSession(socketId:string):PersonalDeathMessage|null {
+    const connection=this.connections.get(socketId);const game=connection?.room.game;
+    if(!connection||!game||!connection.participant.characterId)return null;
+    const actor=game.state.characters.find(c=>c.id===connection.participant.characterId);
+    if(!actor||actor.health>0||actor.eliminated)return null;
+    const saved=game.personalDeaths?.get(actor.id);if(saved)return structuredClone(saved);
+    const message=personalDeathMessage(game.state,game.id,actor.id,connection.participant.id);
+    if(message)(game.personalDeaths??=new Map()).set(actor.id,message);
+    return message?structuredClone(message):null;
+  }
+  sabotageSession(socketId:string):PrivateMedicalSabotage|null {
+    const connection=this.connections.get(socketId);const game=connection?.room.game;
+    const actor=game?.state.characters.find(c=>c.id===connection?.participant.characterId);
+    if(!connection||!game||actor?.role!=="bellhop")return null;
+    const secret=game.state.medicalSabotage;
+    const reason=game.finalResult?"game-finished":!isAlive(actor)?"bellhop-dead":secret?"sabotage-already-used":game.state.inventory.medicalUnits<=0?"no-medical-units":((game.state.currentRound===4||game.state.currentRound===5)&&!this.intermediateWindow(game))||(game.state.currentRound===6&&!this.fourthWindow(game))?"supplies-not-open":null;
+    return {participantId:connection.participant.id,gameId:game.id,performed:!!secret,objectiveFulfilled:secret?.actorId===actor.id&&secret.status==="consumed"&&!!secret.victimId,canManipulate:reason===null,reason};
+  }
+  sabotageMedication(socketId:string,input:unknown):MedicalSabotageReply {
+    const connection=this.connections.get(socketId);const game=connection?.room.game;
+    if(!connection||!game)return {ok:false,error:"invalid-session"};
+    const view=this.sabotageSession(socketId);if(!view)return {ok:false,error:"not-authorized"};
+    if(!input||typeof input!=="object"||Object.keys(input).sort().join(",")!=="gameId,requestId")return {ok:false,error:"invalid-input"};
+    const candidate=input as {requestId:string;gameId:string};
+    if([candidate.requestId,candidate.gameId].some(v=>typeof v!=="string"||!/^[a-zA-Z0-9-]{1,100}$/.test(v)))return {ok:false,error:"invalid-input"};
+    if(candidate.gameId!==game.id)return {ok:false,error:"wrong-game"};
+    const previous=game.state.medicalSabotage;
+    if(previous&&previous.requestId===candidate.requestId&&previous.actorId===connection.participant.characterId)return {ok:true,requestId:candidate.requestId,state:view};
+    if(!view.canManipulate)return {ok:false,error:view.reason!};
+    const result=manipulateMedication(game.state,connection.participant.characterId!,candidate.requestId);
+    if(!result.ok)return {ok:false,error:result.error};
+    game.state=result.state;
+    return {ok:true,requestId:candidate.requestId,state:this.sabotageSession(socketId)!};
+  }
+
   medicalView(code: string): MedicalView | null {
     const room = this.rooms.get(code);
     const current = this.suppliesView(code);
     if (!room?.game || !current) return null;
     return { gameId: current.gameId, round: current.round, characters: current.characters, inventory: current.inventory,
+      ...(room.game.state.suddenMedicalDeaths?.length ? { deaths: room.game.state.suddenMedicalDeaths.map(d => ({participantId:room.participants.find(p => p.characterId === d.characterId)!.id,round:d.round,message:d.message})) } : {}),
       treatments: (room.game.state.medicalTreatments ?? []).map(treatment => ({ round: treatment.round,
         participantId: room.participants.find(player => player.characterId === treatment.characterId)!.id,
         healthRestored: treatment.healthRestored })) };
@@ -799,7 +1047,7 @@ export class RoomManager {
     const candidate = input as TreatmentInput;
     if ([candidate.requestId, candidate.gameId, candidate.targetParticipantId].some(value =>
       typeof value !== "string" || !/^[a-zA-Z0-9-]{1,100}$/.test(value))
-      || (candidate.round !== 1 && candidate.round !== 2 && candidate.round !== 3 && candidate.round !== 4)) return { ok: false, error: "invalid-input" };
+      || (candidate.round !== 1 && candidate.round !== 2 && candidate.round !== 3 && candidate.round !== 4 && candidate.round !== 5 && candidate.round !== 6)) return { ok: false, error: "invalid-input" };
     if (candidate.gameId !== game.id) return { ok: false, error: "wrong-game" };
     const previous = game.treatmentRequests.get(candidate.requestId);
     if (previous) {
@@ -809,19 +1057,28 @@ export class RoomManager {
     }
     // La ronda actual admite tratamiento antes y después de la ruta. Su resolución es síncrona.
     if (candidate.round !== game.state.currentRound) return { ok: false, error: "wrong-round" };
-    if (game.state.currentRound === 4) {
+    if ((game.state.currentRound === 4 || game.state.currentRound === 5) && !this.intermediateWindow(game)) {
+      return { ok: false, error: "supplies-not-open" };
+    }
+    if (game.state.currentRound === 6) {
       if (!this.fourthWindow(game)) return { ok: false, error: "supplies-not-open" };
     }
     const target = room.participants.find(player => player.id === candidate.targetParticipantId);
     if (!target?.characterId) return { ok: false, error: "target-not-found" };
     if (game.finalResult) return { ok: false, error: "supplies-not-open" };
-    const treatment = administerTreatment(game.state, target.characterId);
+    const treatment = administerTreatment(game.state, target.characterId, this.medicalRandom, this.narrativeRandom);
     if (!treatment.ok) return { ok: false, error: treatment.error };
-    const restored = treatment.state.characters.find(c => c.id === target.characterId)!.health - game.state.characters.find(c => c.id === target.characterId)!.health;
+    const restored = treatment.state.medicalTreatments!.at(-1)!.healthRestored;
     // Una sola confirmación síncrona para salud, inventario, límite y recibo.
     game.state = treatment.state;
     game.treatmentRequests.set(candidate.requestId, { ...candidate, actorId: participant.id });
     (game.activities ??= []).push({ id: `treatment:${candidate.requestId}`, round: game.state.currentRound, kind: "treatment", targetParticipantId: target.id, restored });
+    if (!isAlive(game.state.characters.find(c => c.id === target.characterId)!)) {
+      const transport = game.transports?.findLast(t => t.route.round === game.state.currentRound && (t.phase === "voting" || t.phase === "selection"));
+      if (transport) transport.reconcileParticipants();
+      else this.activeVoting(game)?.reconcileElectorate(room.participants.map(p => ({ participantId:p.id, alive:game.state.characters.some(c => c.id === p.characterId && isAlive(c)) })));
+      this.publishVoting(room);
+    }
     this.publishSupplies(room);
     return { ok: true, requestId: candidate.requestId };
   }

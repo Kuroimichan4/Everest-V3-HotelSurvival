@@ -1,0 +1,36 @@
+import {createElement} from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {expect,test,vi} from 'vitest';
+import {io,type Socket} from 'socket.io-client';
+import type {ClientToServerEvents,ServerToClientEvents,RoomSession,PersonalDeathMessage,PrivateMedicalSabotage} from '@everest/shared';
+import {buildApp} from '../../server/src/app.js';
+import {RoomManager} from '../../server/src/rooms/manager.js';
+import type {SimulationState} from '../../server/src/simulation/state.js';
+import {abandonCharacters} from '../../server/src/simulation/abandonment.js';
+import {bindGameSocket} from './game-socket';
+import {emptyGame,gameReducer,type GameState} from './game-state';
+import {GameScreen,type GameActions} from './GameScreen';
+type Client=Socket<ServerToClientEvents,ClientToServerEvents>;
+test('four real clients: mysterious personal death only to victim, no repeated events, F5, no actions and abandoned excluded',async()=>{
+ const poison=vi.fn(()=>0);const manager=new RoomManager(()=>0,undefined,()=>.99,poison,()=>0);const app=buildApp({roomManager:manager});const all:Client[]=[];const cleanup:(()=>void)[]=[];
+ try{
+ await app.listen({host:'127.0.0.1',port:0});const address=app.server.address();if(!address||typeof address==='string')throw new Error('port');
+ const connect=async()=>{const c:Client=io('http://127.0.0.1:'+address.port,{autoConnect:false,reconnection:false});all.push(c);await new Promise<void>((resolve,reject)=>{c.once('connect',resolve);c.once('connect_error',reject);c.connect();});return c;};
+ const clients=await Promise.all([connect(),connect(),connect(),connect()]);const sessions:RoomSession[]=[];const states:GameState[]=clients.map(()=>emptyGame);const personal:(PersonalDeathMessage|null)[]=clients.map(()=>null);const secrets:(PrivateMedicalSabotage|null)[]=clients.map(()=>null);const messages:PersonalDeathMessage[][]=clients.map(()=>[]);const wire:unknown[][]=clients.map(()=>[]);
+ const attach=(c:Client,i:number)=>{cleanup[i]=bindGameSocket(c,update=>{states[i]=gameReducer(states[i]!,update);},{participantId:()=>sessions[i]?.credential.participantId,personalDeath:m=>{personal[i]=m;},sabotage:v=>{secrets[i]=v;},connect:()=>{},disconnect:()=>{},error:()=>{}});c.on('game:personal-death',m=>messages[i]!.push(m));c.onAny((event,...args)=>wire[i]!.push([event,args]));};clients.forEach(attach);
+ const first=await clients[0]!.timeout(3000).emitWithAck('room:create',{name:'Persona 0'});if(!first.ok)throw new Error(first.error);sessions.push(first.value);const code=first.value.room.code;
+ for(let i=1;i<4;i++){const r=await clients[i]!.timeout(3000).emitWithAck('room:join',{name:'Persona '+i,code});if(!r.ok)throw new Error(r.error);sessions.push(r.value);}await clients[0]!.timeout(3000).emitWithAck('room:start');
+ const game=(manager as unknown as {rooms:Map<string,{game:{state:SimulationState}}>}).rooms.get(code)!.game;game.state={...game.state,characters:game.state.characters.map(c=>({...c,health:60}))};const gameId=manager.suppliesView(code)!.gameId;
+ expect((await clients[2]!.timeout(3000).emitWithAck('medical:sabotage',{gameId,requestId:'secret'})).ok).toBe(true);expect((await clients[0]!.timeout(3000).emitWithAck('medical:treat',{gameId,requestId:'tx',round:1,targetParticipantId:sessions[1]!.credential.participantId})).ok).toBe(true);
+ await vi.waitFor(()=>expect(personal[1]?.kind==='unexpected'&&secrets[2]?.objectiveFulfilled&&states[1]!.supplies?.characters[1]?.status==='dead').toBe(true));const original=structuredClone(personal[1]!);expect(messages.map(m=>m.length)).toEqual([0,1,0,0]);expect(poison).toHaveBeenCalledTimes(1);
+ const actions:GameActions={onVote:()=>{},onRoute:()=>{},onOpenThree:()=>{},onAdvance:()=>{},onOpenTransport:()=>{},onRetry:()=>{},onGive:()=>{},onTreat:()=>{}};
+ const render=(i:number)=>renderToStaticMarkup(createElement(GameScreen,{state:states[i]!,personalDeath:personal[i]!,privateSabotage:secrets[i]!,participantId:sessions[i]!.credential.participantId,connected:true,busy:false,error:'',actions}));
+ for(let i=0;i<4;i++){expect(render(i).includes('data-personal-death=')).toBe(i===1);if(i!==2)expect(JSON.stringify(wire[i])).not.toMatch(/venen|sabot|25 %|medicalSabotage|objectiveFulfilled|actorId|"uses"/i);}
+ expect(render(1)).toContain('Has fallecido');expect(render(1)).toContain('Ya no puedes participar en las decisiones');expect(render(2)).toContain('Objetivo: Cumplido');expect(JSON.stringify(states[1])).not.toMatch(/personalDeath|eventId|medicalSabotage|venen|sabot/i);
+ manager.onSuppliesChanged(code);manager.onVotingChanged(code);await vi.waitFor(()=>expect(states[0]!.medical?.deaths).toHaveLength(1));expect(messages[1]).toHaveLength(1);expect(render(1).match(/data-personal-death=/g)).toHaveLength(1);
+ const v=manager.publicVote(code)!;expect((await clients[1]!.timeout(3000).emitWithAck('vote:cast',{decisionId:v.decisionId,attemptId:v.attemptId,optionId:'rescue'})).ok).toBe(false);expect((await clients[1]!.timeout(3000).emitWithAck('medical:sabotage',{gameId,requestId:'bad'})).ok).toBe(false);expect((await clients[1]!.timeout(3000).emitWithAck('medical:treat',{gameId,requestId:'bad',round:1,targetParticipantId:sessions[0]!.credential.participantId})).ok).toBe(false);expect((await clients[1]!.timeout(3000).emitWithAck('pack:give',{requestId:'bad',windowId:'none',targetParticipantId:sessions[0]!.credential.participantId})).ok).toBe(false);expect((await clients[1]!.timeout(3000).emitWithAck('round:advance')).ok).toBe(false);
+ game.state=abandonCharacters(game.state,[game.state.characters[3]!.id]).state;manager.onSuppliesChanged(code);await vi.waitFor(()=>expect(states[3]!.supplies?.characters[3]?.eliminated).toBe(true));expect(personal[3]).toBeNull();expect(messages[3]).toEqual([]);expect(render(3)).not.toContain('data-personal-death=');
+ clients[1]!.disconnect();await vi.waitFor(()=>expect(states[0]!.room!.participants[1]!.connected).toBe(false));expect(personal[1]).toBeNull();cleanup[1]!();clients[1]=await connect();attach(clients[1]!,1);expect((await clients[1]!.timeout(3000).emitWithAck('room:resume',sessions[1]!.credential)).ok).toBe(true);await vi.waitFor(()=>expect(personal[1]).toEqual(original));expect(messages[1]).toHaveLength(2);expect(render(1).match(/data-personal-death=/g)).toHaveLength(1);expect(manager.privateRole(clients[1]!.id!)).toBeNull();expect((await clients[1]!.timeout(3000).emitWithAck('round:advance')).ok).toBe(false);expect(poison).toHaveBeenCalledTimes(1);
+ for(const i of [0,2])expect((await clients[i]!.timeout(3000).emitWithAck('vote:cast',{decisionId:v.decisionId,attemptId:v.attemptId,optionId:'abandon'})).ok).toBe(true);expect((await clients[0]!.timeout(3000).emitWithAck('round:advance')).ok).toBe(true);manager.onSuppliesChanged(code);await vi.waitFor(()=>expect(states[1]!.supplies!.round).toBe(2));expect(manager.personalDeathSession(clients[1]!.id!)).toEqual(original);expect(personal[1]).toEqual(original);expect(messages.map(m=>m.length)).toEqual([0,2,0,0]);
+ }finally{cleanup.forEach(fn=>fn());all.forEach(c=>c.disconnect());manager.dispose();await app.close();}
+},15000);

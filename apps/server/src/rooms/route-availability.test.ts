@@ -127,7 +127,7 @@ test("revelación de ventilación sobrevive a recuperar selección y no publica 
   f.changeEnergy([20, 20, 20, 20]); f.vote("shoring", [2]);
   f.manager.retryRoute("s0", { decisionId: f.view().recovery!.decisionId });
   expect(f.options().map(o => o.id)).toContain("ventilation");
-  expect(JSON.stringify(f.options())).not.toMatch(/LOW|BAJO|probability|accidentProbability|objective|token/);
+  expect(JSON.stringify(f.manager.sessionProjection("s3", f.options()))).not.toMatch(/LOW|BAJO|probability|accidentProbability|objective|token/);
 });
 
 test("una sala no puede recuperar decisiones ajenas", () => {
@@ -188,18 +188,18 @@ test("10A: NPC rescue blocked by energy waits for packs and retries once before 
 });
 
 test("10A: reselecting a route after rescue keeps the NPC and never pays its 25 energy again", () => {
-  const f = setup(2, [40, 40, 40, 40]); f.manager.routeAction("s3", "reveal"); f.open();
+  const f = setup(2, [40, 45, 40, 45]); f.manager.routeAction("s3", "reveal"); f.open();
   const cast = (optionId: string) => { const v = f.manager.publicVote(f.code)!; for (const i of [0, 1, 2]) expect(f.manager.vote(`s${i}`, { decisionId: v.decisionId, attemptId: v.attemptId, optionId }).ok).toBe(true); };
   cast("shoring"); const route = f.manager.roundTwoView(f.code)!.routeChoice!.result!; cast("rescue");
   expect(f.view().recovery).toMatchObject({ decisionId: route.decisionId, forced: false });
-  expect(f.game().state.characters.every(c => c.energy === 15)).toBe(true);
+  expect(f.game().state.characters.map(c => c.energy)).toEqual([15,20,15,20]);
   const npcResolution = f.game().state.roundTwo!.resolution;
   for (const i of [0, 1, 2, 3]) expect(f.give(i).ok).toBe(true);
   expect(f.manager.retryRoute("s0", { decisionId: route.decisionId }).ok).toBe(true);
   f.open(); cast("shoring");
   expect(f.view().phase).toBe("transport-pending");
   expect(f.game().state.roundTwo!.resolution).toBe(npcResolution);
-  expect(f.game().state.characters.every(c => c.energy === 40)).toBe(true);
+  expect(f.game().state.characters.map(c => c.energy)).toEqual([40,45,40,45]);
   expect(f.game().state.routeRevelations).toHaveLength(1);
   const prep = f.manager.transportView(f.code)!.cases.at(-1)!;
   f.manager.openTransport("s0", { preparationId: prep.preparationId });

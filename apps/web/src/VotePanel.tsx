@@ -28,6 +28,15 @@ export function Countdown({ vote }: { vote: PublicVote | null }) {
   const remaining = useVoteRemaining(vote);
   return vote ? <span className={`countdown ${remaining <= 10 ? "urgent" : ""}`} aria-label="Tiempo restante">{remaining}s</span> : null;
 }
+export function VoteStatus({ vote, label }: { vote: PublicVote | null; label: string }) {
+ const remaining = useVoteRemaining(vote);
+ if (!vote || vote.status !== "open") return null;
+ return <section className={`vote-status ${remaining <= 10 ? "urgent" : ""}`} aria-label="Votación en curso">
+  <div><strong>{label}</strong><p>Intento {vote.attemptNumber}{vote.attemptNumber === 3 ? " · Extraordinario" : ""}</p>
+  {remaining <= 10 && <strong className="time-warning">¡Últimos segundos para decidir!</strong>}</div>
+  <div className="vote-time"><span>Tiempo restante</span><span role="timer" aria-label="Tiempo restante" className="vote-seconds">{remaining}<small> s</small></span></div>
+ </section>;
+}
 export interface VoteOptionView { id: string; label: string; detail?: ReactNode; disabled?: boolean; reason?: string }
 export function VotePanel({ title, vote, own, options, enabled, busy, onVote }: {
   title: string; vote: PublicVote; own: OwnVote | null; options: VoteOptionView[];
@@ -37,7 +46,7 @@ export function VotePanel({ title, vote, own, options, enabled, busy, onVote }: 
   const clock = useContext(VoteClock);
   const ownOption = own?.decisionId === vote.decisionId && own.attemptId === vote.attemptId ? own.optionId : null;
   return <div className="vote-panel" aria-label={title}>
-    <div className="vote-meta"><span>Intento {vote.attemptNumber} de 2</span><span>Mayoría necesaria: {vote.requiredVotes}</span>{!clock && <span>Tiempo restante: {remaining} s.</span>}</div>
+    <div className="vote-meta"><span>Intento {vote.attemptNumber}</span><span>Mayoría necesaria: {vote.requiredVotes}</span>{!clock && <span>Tiempo restante: {remaining} s.</span>}</div>
     <div className="option-grid">{options.map(option => <article className={`option-card ${option.disabled ? "unavailable" : ""} ${ownOption === option.id ? "selected" : ""}`} key={option.id}>
       <h4>{option.label}</h4>{option.detail && <div className="option-detail">{option.detail}</div>}
       {option.reason && <p className="muted">{option.reason}</p>}

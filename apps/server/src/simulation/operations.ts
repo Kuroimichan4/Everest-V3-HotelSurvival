@@ -1,7 +1,9 @@
+import { POISON_PROBABILITY, SUDDEN_DEATH_NARRATIVES } from "./medical-sabotage.js";
 import { isAlive } from "./state.js";
 import type { HumanCharacter, SimulationState, EngineState } from "./state.js";
 
 export type OperationError =
+  | "invalid-random"
   | "invalid-amount"
   | "character-not-found"
   | "character-dead"
@@ -71,7 +73,7 @@ export function consumePack<S extends EngineState>(state: S, characterId: string
 }
 
 /** Un humano vivo por unidad; el límite se conserva por destinatario y ronda. */
-export function administerTreatment<S extends EngineState>(state: S, characterId: string): OperationResult<S> {
+export function administerTreatment<S extends EngineState>(state: S, characterId: string, random: () => number = Math.random, narrativeRandom: () => number = Math.random): OperationResult<S> {
   const character = state.characters.find(candidate => candidate.id === characterId);
   if (!character) return reject(state, "character-not-found");
   if (!isAlive(character)) return reject(state, "character-dead");
@@ -80,9 +82,17 @@ export function administerTreatment<S extends EngineState>(state: S, characterId
   // Regla pendiente: rechazo seguro, sin gastar ni registrar un tratamiento.
   if (character.health >= 100) return reject(state, "health-full-pending");
   if (state.inventory.medicalUnits <= 0) return reject(state, "no-medical-units");
-  const health = Math.min(100, character.health + 20);
+  const pending = state.medicalSabotage?.status === "pending";
+  const roll = pending ? random() : 1;
+  if (pending && (!Number.isFinite(roll) || roll < 0 || roll >= 1)) return reject(state, "invalid-random");
+  const poisoned = pending && roll < POISON_PROBABILITY;
+  const health = poisoned ? 0 : Math.min(100, character.health + 20);
+  const narrativeRoll = poisoned ? narrativeRandom() : 0;
+  const message = SUDDEN_DEATH_NARRATIVES[Number.isFinite(narrativeRoll) && narrativeRoll >= 0 && narrativeRoll < 1 ? Math.floor(narrativeRoll * SUDDEN_DEATH_NARRATIVES.length) : 0]!;
   const updated = replaceCharacter(state, { ...character, health });
   return { ok: true, state: { ...updated,
     inventory: { ...state.inventory, medicalUnits: state.inventory.medicalUnits - 1 },
-    medicalTreatments: [...history, { round: state.currentRound, characterId, healthRestored: health - character.health }] } };
+    ...(pending ? { medicalSabotage: { ...state.medicalSabotage!, status: poisoned ? "consumed" as const : "pending" as const, uses: [...state.medicalSabotage!.uses, { round: state.currentRound, patientId: characterId, poisoned }], ...(poisoned ? { victimId: characterId } : {}) } } : {}),
+    ...(poisoned ? { suddenMedicalDeaths: [...(state.suddenMedicalDeaths ?? []), { characterId, round: state.currentRound, message }] } : {}),
+    medicalTreatments: [...history, { round: state.currentRound, characterId, healthRestored: poisoned ? 0 : health - character.health }] } };
 }

@@ -70,7 +70,8 @@ details[open] > summary { margin-bottom: 1rem; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; gap: .75rem; margin-bottom: 1rem; }
 .section-heading h2, .section-heading h3 { margin-bottom: 0; }
 .team-grid, .waiting-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
-.player-card { background: #10212b; border: 1px solid #2b414f; border-radius: 11px; padding: 1rem; min-width: 0; }
+.team-grid { align-items: stretch; }
+.player-card { display: flex; flex-direction: column; overflow-wrap: anywhere; background: #10212b; border: 1px solid #2b414f; border-radius: 11px; padding: 1rem; min-width: 0; }
 .player-card.is-self { border-color: #426977; }
 .player-heading { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
 .player-heading strong { font-size: .9rem; overflow-wrap: anywhere; }
@@ -118,3 +119,69 @@ th, td { padding: .65rem; text-align: left; border-bottom: 1px solid var(--borde
 @media (max-width: 900px) { .game-header { align-items: flex-start; } .header-status { max-width: 55%; } .game-layout { grid-template-columns: 230px minmax(0, 1fr); gap: 1rem; } .panel { padding: 1.15rem; } .shared-inventory { gap: .5rem; } .shared-inventory strong { font-size: .9rem; } }
 @media (max-width: 680px) { .shell { width: min(100% - 1.5rem, 540px); } .game-header { flex-direction: column; gap: 1rem; padding: 1.2rem 0; margin-bottom: 1rem; } .header-status { justify-content: flex-start; max-width: none; gap: .5rem .7rem; } .game-layout { display: flex; flex-direction: column; } .sidebar, .main-column, .game-history { width: 100%; } .main-column { order: -1; } .sidebar { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); } .current-action h2 { font-size: 1.4rem; } .team-grid { gap: .6rem; } .player-card { padding: .8rem; } .player-heading { display: block; } .player-heading > span { display: block; margin-top: .3rem; } .lobby-panel { margin: 1rem auto; padding: 1.3rem; } .lobby-panel > h2 { font-size: 1.6rem; } .join-actions { grid-template-columns: 1fr; } .shared-inventory { gap: .4rem; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+
+/* Acciones directas dentro de la única tarjeta de cada participante. */
+.card-resource { margin-top: auto; padding-top: .85rem; display: flex; flex-direction: column; gap: .4rem; }
+.card-resource button { width: 100%; white-space: normal; }
+.card-resource p { margin: 0; font-size: .85rem; }
+.specialist-information { color: #b5e2ef; }
+
+/* 10E.1: cuenta atrás única y avisos sin superponer controles. */
+.vote-status { position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 1rem; background: #143c3e; border: 2px solid #78d8c5; border-radius: 12px; padding: .85rem 1.25rem; margin-bottom: 1.2rem; box-shadow: 0 4px 14px #0005; }
+.vote-status p { margin: .2rem 0; }
+.vote-time { text-align: center; flex-shrink: 0; }
+.vote-time > span { display: block; }
+.vote-seconds { font-size: clamp(2.5rem, 5vw, 4rem); font-weight: 750; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.vote-seconds small { font-size: 1rem; }
+.vote-status.urgent { background: #4b3024; border-style: double; border-width: 4px; border-color: #ffc481; }
+.time-warning { display: block; font-size: .85rem; }
+.transport-alert { background: #493323; border: 2px solid #edbd7d; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
+.game-introduction { border-block: 1px solid var(--border); padding-block: 1.1rem; margin-block: 1rem; font-size: .92rem; }
+.private-details .character-sheet ul { margin-bottom: .6rem; }
+@media (max-width: 680px) { .vote-status { padding: .65rem .8rem; gap: .65rem; font-size: .85rem; } .vote-time { min-width: 5rem; } .vote-status strong { overflow-wrap: anywhere; } }
+.transport-alert h3 { font-size: 1rem; margin-bottom: .35rem; }
+.transport-alert p { font-size: .85rem; line-height: 1.45; margin-block: .35rem; }
+/* 10F.2: capacidad privada compacta y narración pública sin ventanas modales. */
+.bellhop-sabotage { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: .85rem; font-size: .85rem; min-width: 0; }
+.bellhop-sabotage p { line-height: 1.45; }
+.bellhop-sabotage button { width: 100%; white-space: normal; font-size: .85rem; }
+.medical-death-notice { border-left: 3px solid #d6a881; padding: 1rem; margin: 0; }
+.medical-death-notice h3 { font-size: 1rem; }
+.medical-death-notice p { font-size: .9rem; }
+/* 10F.2.1: mensaje propio permanente en el flujo, sin superponer la partida. */
+.personal-death-notice { border: 1px solid #a78686; border-left: 4px solid #ba9696; background: #281f28; margin-bottom: 1.2rem; min-width: 0; }
+.personal-death-notice h2 { color: #f3dede; }
+.personal-death-notice p { max-width: 78ch; }
+.personal-death-restrictions { font-weight: 600; color: #ded3db; font-size: .9rem; }
+@media (max-width: 680px) { .personal-death-notice { padding: 1rem; } .personal-death-notice h2 { font-size: 1.35rem; } }
+/* 10C.2: solo se representa la información que desbloqueó el servidor. */
+.structural-report { padding: .6rem .75rem; border-left: 3px solid #85c4dd; background: #193442; border-radius: 4px; }
+/* Chat stays in normal flow: voting and urgent notices never sit behind an overlay. */
+.room-with-chat { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1.2rem; align-items: start; }
+.room-content { min-width: 0; }
+.chat-panel { position: sticky; top: 1rem; padding: 1rem; }
+.chat-panel h2 { font-size: 1.1rem; }
+.chat-history { height: min(42vh, 400px); min-height: 150px; overflow-y: auto; overflow-x: hidden; margin-bottom: 1rem; }
+.chat-message { padding: .6rem; margin: .5rem 0; border-radius: 8px; background: #1b323e; overflow-wrap: anywhere; }
+.chat-message.is-own { background: #18413e; border-left: 3px solid var(--accent); }
+.chat-sender { font-size: .78rem; color: #b9d5df; margin: 0 0 .3rem; }
+.chat-text { white-space: pre-wrap; margin: 0; font-size: .9rem; }
+.chat-panel textarea { width: 100%; min-width: 0; max-width: 100%; resize: vertical; font: inherit; color: inherit; background: #0c1d26; border: 1px solid var(--border); border-radius: 7px; padding: .65rem; }
+.chat-send { display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .5rem; }
+.chat-toggle { display: none; }
+.chat-vote-link { color: var(--accent); font-size: .85rem; }
+@media (min-width: 1101px) and (max-width: 1350px) { .room-with-chat .game-layout { grid-template-columns: 220px minmax(0, 1fr); gap: .8rem; } }
+@media (max-width: 1100px) {
+  .room-with-chat { display: flex; flex-direction: column; }
+  .room-with-chat > .room-content { display: contents; }
+  .room-with-chat > .room-content > * { width: 100%; }
+  .room-with-chat > .room-content > .game-layout { order: 2; }
+  .room-with-chat > .room-content > .app-footer { order: 3; }
+  .room-content, .chat-panel { width: 100%; }
+  .chat-panel { position: static; order: 1; }
+  .chat-toggle { display: inline-flex; }
+  .chat-panel .section-heading { flex-wrap: wrap; margin-bottom: 0; gap: .5rem; }
+  .chat-content { display: none; margin-top: 1rem; }
+  .chat-panel.is-open .chat-content { display: block; }
+  .chat-history { height: 180px; }
+}

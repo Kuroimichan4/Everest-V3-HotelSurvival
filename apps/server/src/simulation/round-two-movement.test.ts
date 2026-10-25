@@ -1,3 +1,5 @@
+
+const technicalExtra = (role: string, route: string) => route === "shoring" && (role === "maintenance" || role === "architect-engineer") ? 5 : 0;
 import { expect, test, vi } from "vitest";
 import { createInitialState, type SimulationState } from "./state.js";
 import { resolveRoundOne } from "./round-one.js";
@@ -21,7 +23,7 @@ test.each(routes)("%s: coordinación sin accidente, coste %i y sin repetición",
   const random = vi.fn(() => 0.99);
   const result = resolveRoundTwoMovement(state, choice(routeId), random);
   expect(result.ok).toBe(true);
-  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual(Array.from({ length: 4 }, () => [100, 100 - cost]));
+  expect(result.state.characters.map(c => [c.health, c.energy])).toEqual(state.characters.map(c => [100, 100 - cost - technicalExtra(c.role, routeId)]));
   expect(result.state.roundTwo?.movement).toMatchObject({ status: "completed", routeId, forced: false, accident: false, energyCost: cost, victims: [] });
   expect(random).toHaveBeenCalledTimes(1);
   expect(resolveRoundTwoMovement(result.state, choice("NO_AGREEMENT"), random).state).toBe(result.state);
@@ -31,18 +33,18 @@ test.each(routes)("%s: coordinación sin accidente, coste %i y sin repetición",
   expect(result.state.roundTwo?.resolution).toBe(state.roundTwo?.resolution);
 });
 
-test.each(routes)("%s: una tirada de accidente y dos extracciones sin repetición", (routeId, cost, damage) => {
+test.each(routes)("%s: una tirada de accidente y tres extracciones sin repetición", (routeId, cost, damage) => {
   const state = ready();
   const random = vi.fn(() => 0);
   const result = resolveRoundTwoMovement(state, choice(routeId), random);
   expect(result.ok).toBe(true);
-  expect(random).toHaveBeenCalledTimes(3);
-  expect(result.state.characters.map(c => c.energy)).toEqual([100 - cost, 100 - cost, 100 - cost, 100 - cost]);
-  expect(result.state.characters.map(c => c.health)).toEqual([100 - damage, 100 - damage, 100, 100]);
+  expect(random).toHaveBeenCalledTimes(4);
+  expect(result.state.characters.map(c => c.energy)).toEqual(state.characters.map(c => 100 - cost - technicalExtra(c.role, routeId)));
+  expect(result.state.characters.map(c => c.health)).toEqual([100 - damage, 100 - damage, 100 - damage, 100]);
   expect(result.state.roundTwo?.movement).toMatchObject({ status: "completed", accident: true,
-    victims: state.characters.slice(0, 2).map(c => ({ characterId: c.id, damage })) });
+    victims: state.characters.slice(0, 3).map(c => ({ characterId: c.id, damage })) });
   resolveRoundTwoMovement(result.state, choice(routeId), random);
-  expect(random).toHaveBeenCalledTimes(3);
+  expect(random).toHaveBeenCalledTimes(4);
 });
 
 test.each(["RESCUE_APPROVED", "ABANDON_APPROVED", "NO_AGREEMENT"] as const)("desacuerdo de ruta independiente del rescate %s, también con accidente", rescue => {
@@ -52,11 +54,11 @@ test.each(["RESCUE_APPROVED", "ABANDON_APPROVED", "NO_AGREEMENT"] as const)("des
     const result = resolveRoundTwoMovement(state, choice("NO_AGREEMENT"), random);
     expect(result.ok).toBe(true);
     const initialHealth = rescue === "NO_AGREEMENT" ? 90 : 100;
-    expect(result.state.characters.map(c => c.health)).toEqual([initialHealth - 10 - (accident ? 20 : 0), initialHealth - 10 - (accident ? 20 : 0), initialHealth - 10, initialHealth - 10]);
+    expect(result.state.characters.map(c => c.health)).toEqual([initialHealth - 10 - (accident ? 20 : 0), initialHealth - 10 - (accident ? 20 : 0), initialHealth - 10 - (accident ? 20 : 0), initialHealth - 10]);
     expect(result.state.characters.map(c => c.energy)).toEqual(Array(4).fill(100 - 20));
     expect(result.state.roundTwo?.movement).toMatchObject({ status: "completed", forced: true, routeId: "unstable-corridor", microearthquake: true, energyCost: 20, accident });
     expect(result.state.roundTwo?.resolution).toBe(state.roundTwo?.resolution);
-    expect(random).toHaveBeenCalledTimes(accident ? 3 : 1);
+    expect(random).toHaveBeenCalledTimes(accident ? 4 : 1);
   }
 });
 
@@ -90,7 +92,7 @@ test.each(["insufficient-energy", "single-survivor-pending", "no-living-characte
   if (["single-survivor-pending", "fatal-microearthquake-order-pending", "fatal-accident-order-pending"].includes(error)) {
     expect(result.ok).toBe(true);
     const expectedHealth = error === "single-survivor-pending" ? [70, 0, 0, 0]
-      : error === "fatal-microearthquake-order-pending" ? [0, 0, 0, 0] : [0, 0, 20, 20];
+      : error === "fatal-microearthquake-order-pending" ? [0, 0, 0, 0] : [0, 0, 0, 20];
     expect(result.state.characters.map(c => c.health)).toEqual(expectedHealth);
     expect(result.state.roundTwo?.movement?.status).toBe("completed");
     expect(state).toEqual(snapshot);

@@ -1,3 +1,4 @@
+import { RouteRisk } from "./RouteInformation";
 import type { OwnVote, RoundFourView } from "@everest/shared";
 import { reasonLabel } from "./game-state";
 import { VotePanel } from "./VotePanel";
@@ -21,20 +22,20 @@ export function RoundFour({ state, own, creator, enabled, busy, onVote, onOpen, 
       <p>Han conseguido salir: {names(m.escapedHumanIds)}.</p>
       <p>Fallecidos: {names(m.characters.filter(c => c.status === "dead" || c.health === 0 && !c.eliminated).map(c => c.participantId))}.</p>
       <p>Abandonados: {names(m.characters.filter(c => c.eliminated).map(c => c.participantId))}.</p>
-      <p>{npcFourLabel(npc.status)}</p><p className="muted">La salud, energía, recursos restantes y palanca se muestran en el estado del equipo. La evaluación final sigue pendiente.</p></>;
+      {npc.encounter !== "none" && <p>{npcFourLabel(npc.status)}</p>}<p className="muted">La salud, energía, recursos restantes y palanca se muestran en el estado del equipo. La evaluación final sigue pendiente.</p></>;
   }
   if (state.phase === "npc-voting") return <><p className="eyebrow">SUPERVIVIENTE EN EL VESTÍBULO</p><h2>Decidir el rescate</h2>
     <p>{npc.encounter === "immobile" ? "El superviviente no puede caminar por sí mismo." : "El superviviente puede caminar con ayuda."}</p>
     {npc.message && <p className="notice" role="status">{npc.message}</p>}
-    {npc.vote && <VotePanel title="Rescate del superviviente de ronda 4" vote={npc.vote} own={own} enabled={enabled} busy={busy} onVote={onVote}
+    {npc.vote && <VotePanel title="Rescate del superviviente de ronda 6" vote={npc.vote} own={own} enabled={enabled} busy={busy} onVote={onVote}
       options={npc.options.map(o => ({ id: o.id, label: o.label, disabled: !o.available,
         detail: <p>{o.energyPerHuman} de energía adicional por humano participante{o.medicalUnits ? ` y ${o.medicalUnits} unidad médica compartida` : ""}.</p>,
         ...(!o.available ? { reason: "No quedan unidades médicas disponibles." } : {}) }))} />}
     <p className="muted">Aprobar el rescate no confirma su ejecución: el esfuerzo se pagará junto con la salida.</p></>;
   const options = state.options.map(o => ({ id: o.id, label: o.name,
-    disabled: o.availability.status === "unavailable", detail: <p>{o.energyCost} de energía por humano que camine.
+    disabled: o.availability.status === "unavailable", detail: <><p>{o.description}</p><RouteRisk danger={o.danger} /><p>{o.energyCost} de energía por humano que camine.
       {o.id === "revolving-door" ? " Requiere la palanca existente." : " No requiere palanca."}
-      {o.availability.status === "with-help" ? " Necesita transporte humano." : ""}</p>,
+      {o.availability.status === "with-help" ? " Necesita transporte humano." : ""}</p></>,
     ...(o.availability.reason ? { reason: reasonLabel(o.availability.reason) } : {}) }));
   return <><p className="eyebrow">SALIDA DEL HOTEL</p><h2>{state.forced ? "Grieta exterior obligatoria" : "Elegir la salida"}</h2>
     <p>{npcFourLabel(npc.status)}</p>

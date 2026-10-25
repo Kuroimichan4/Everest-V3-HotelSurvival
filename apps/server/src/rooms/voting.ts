@@ -1,5 +1,5 @@
 import type { OwnVote, PublicVote, VoteInput, VoteReply } from "@everest/shared";
-import { castVote, checkDeadline, createDecision, openNextAttempt } from "../voting/engine.js";
+import { reconcileElectorate, castVote, checkDeadline, createDecision, openNextAttempt } from "../voting/engine.js";
 import type { Decision, Voter, VoteOption } from "../voting/types.js";
 import { newId } from "./identity.js";
 import type { VotingPolicy } from "../voting/types.js";
@@ -15,16 +15,18 @@ export const systemClock: VotingClock = {
 
 /** Una instancia por partida; el motor puro sigue siendo la única autoridad de reglas. */
 export class RoomVoting {
+  private stopped = false;
   private decision: Decision;
   private cancel: (() => void) | undefined;
-  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void, private readonly round: 1 | 2 | 3 | 4 = 1, options: readonly VoteOption[] = [{ id: "rescue", label: "RESCATAR" }, { id: "abandon", label: "ABANDONAR" }], policy?: VotingPolicy,
-    private readonly beforeRetry?: (decisionId: string) => readonly Voter[]) {
-    const created = createDecision({ id: newId(), attemptId: newId(), now: clock.now(), electorate,
+  constructor(electorate: readonly Voter[], private readonly clock: VotingClock, private readonly changed: () => void, private readonly round: 1 | 2 | 3 | 4 | 5 | 6 = 1, options: readonly VoteOption[] = [{ id: "rescue", label: "RESCATAR" }, { id: "abandon", label: "ABANDONAR" }], policy?: VotingPolicy,
+    private readonly beforeRetry?: (decisionId: string, nextAttemptNumber: number) => readonly Voter[] | null, initialDecision?: Decision) {
+    const created = initialDecision ? { ok: true as const, state: initialDecision } : createDecision({ id: newId(), attemptId: newId(), now: clock.now(), electorate,
       options, ...(policy ? { policy } : {}) });
     if (!created.ok) throw new Error(created.error);
     this.decision = created.state;
     this.schedule();
   }
+  snapshot(): Decision { return structuredClone(this.decision); }
   dispose(): void { this.cancel?.(); this.cancel = undefined; }
   private schedule(): void {
     this.dispose();
@@ -36,23 +38,32 @@ export class RoomVoting {
       if (!this.cancel && this.decision.status === "open") this.schedule();
     }, Math.max(0, deadline - this.clock.now()));
   }
+  stop(): void { this.stopped = true; this.dispose(); }
   refresh(): void {
+    if (this.stopped) return;
     const before = this.decision;
     const checked = checkDeadline(before, before.attempts.at(-1)!.id, this.clock.now());
     if (checked.ok) this.decision = checked.state;
     if (this.decision.status === "awaiting-retry") {
-      const electorate = this.beforeRetry?.(this.decision.id);
+      const electorate = this.beforeRetry?.(this.decision.id, this.decision.attempts.length + 1);
+      if (electorate === null) { this.stop(); return; }
       const next = openNextAttempt(this.decision, newId(), this.clock.now(), electorate);
       if (next.ok) this.decision = next.state;
     }
     if (before !== this.decision) { this.schedule(); this.changed(); }
+  }
+  reconcileElectorate(electorate:readonly Voter[],allowedOptionIds?:readonly string[]):void {
+    this.refresh();if(this.stopped||this.decision.status!=="open")return;
+    if(!electorate.some(v=>v.alive)){this.stop();return;}
+    const result=reconcileElectorate(this.decision,electorate,this.clock.now(),allowedOptionIds);
+    if(result.ok){this.decision=result.state;this.schedule();this.changed();}
   }
   publicView(): PublicVote {
     const decision = this.decision;
     const current = decision.attempts.at(-1)!;
     return { decisionId: decision.id, attemptId: current.id, round: this.round, attemptNumber: decision.attempts.length,
       deadline: current.deadline, serverNow: this.clock.now(), requiredVotes: current.requiredVotes,
-      status: decision.status === "open" ? "open" : "closed",
+      status: decision.status === "open" && !this.stopped ? "open" : "closed",
       result: decision.status !== "closed" ? null : decision.result.kind === "no-agreement" ? "NO_AGREEMENT"
         : decision.result.optionId === "rescue" ? "RESCUE_APPROVED" : decision.result.optionId === "abandon" ? "ABANDON_APPROVED" : null };
   }
@@ -65,6 +76,7 @@ export class RoomVoting {
       optionId: current.votes.find((vote) => vote.participantId === participantId)?.optionId ?? null };
   }
   vote(participantId: string, input: unknown): VoteReply {
+    if (this.stopped) return { ok: false, error: "closed" };
     if (!input || typeof input !== "object" || Object.keys(input).sort().join(",") !== "attemptId,decisionId,optionId") return { ok: false, error: "invalid-input" };
     const candidate = input as VoteInput;
     if ([candidate.decisionId, candidate.attemptId, candidate.optionId].some((value) => typeof value !== "string")) return { ok: false, error: "invalid-input" };

@@ -1,9 +1,12 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { io } from "socket.io-client";
-import type { PublicRoom, OwnVote, RoomError, RoomReply, RoomSession, SessionCredential, PackInput, PackReply, TreatmentInput, TreatmentReply } from "@everest/shared";
+import type { PersonalDeathMessage, PrivateMedicalSabotage, MedicalSabotageInput, MedicalSabotageReply, PublicRoom, OwnVote, RoomError, RoomReply, RoomSession, SessionCredential, PackInput, PackReply, TreatmentInput, TreatmentReply } from "@everest/shared";
 import { bindGameSocket, type GameSocket } from "./game-socket";
 import { activeScene, emptyGame, gameReducer, reasonLabel } from "./game-state";
+import { GameIntroduction } from "./GameIntroduction";
 import { GameHeader, GameScreen } from "./GameScreen";
+import { TeamChat } from './TeamChat';
+import type { ChatView, ChatInput, ChatReply } from '@everest/shared';
 
 const storageKey = "everest-room-session";
 const errors: Record<RoomError, string> = {
@@ -29,12 +32,15 @@ function readCredential(): SessionCredential | null {
 }
 
 export function Lobby() {
+  const [chat, setChat] = useState<ChatView | null>(null);
   const socketRef = useRef<GameSocket | null>(null);
   const credential = useRef<SessionCredential | null>(readCredential());
   const [game, dispatch] = useReducer(gameReducer, emptyGame);
-  const { room, supplies } = game;
+  const { room } = game;
   const setRoom = (value: PublicRoom | null) => dispatch({ type: "room", value });
   const setOwnVote = (value: OwnVote | null) => dispatch({ type: "ownVote", value });
+  const [personalDeath, setPersonalDeath] = useState<PersonalDeathMessage | null>(null);
+  const [privateSabotage, setPrivateSabotage] = useState<PrivateMedicalSabotage | null>(null);
   const [votingBusy, setVotingBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
@@ -63,7 +69,10 @@ export function Lobby() {
       catch { setError("No se pudo guardar la sesión: una recarga podría impedir la reconexión."); }
     };
     const unbind = bindGameSocket(socket, dispatch, {
+      chat: value => setChat(previous => !value || !previous || value.code !== previous.code || value.sequence >= previous.sequence ? value : previous),
       participantId: () => credential.current?.participantId,
+      sabotage: setPrivateSabotage,
+      personalDeath: setPersonalDeath,
       connect: () => {
         setConnected(true);
       if (credential.current) {
@@ -145,8 +154,19 @@ export function Lobby() {
       if (err) setError("Sin confirmación. Reconecta para recuperar la evacuación.");
       else if (!reply.ok) setError(reasonLabel(reply.error));
     };
-    if (action === "retry") socket.timeout(5000).emit("round-four:retry", { preparationId: preparationId ?? "" }, done);
-    else socket.timeout(5000).emit(action === "advance" ? "round-four:advance" : "round-four:open", done);
+    if (action === "retry") socket.timeout(5000).emit("round-six:retry", { preparationId: preparationId ?? "" }, done);
+    else socket.timeout(5000).emit(action === "advance" ? "round-six:advance" : "round-six:open", done);
+  }
+
+  function intermediateAction(round: 4 | 5, action: "advance" | "reveal" | "open" | "retry") {
+    const socket = socketRef.current;
+    if (!socket?.connected || !authenticated || busy) return;
+    setBusy(true); setError("");
+    socket.timeout(5000).emit("intermediate:action", { round, action }, (err, reply) => {
+      setBusy(false);
+      if (err) setError("Sin confirmación. Reconecta para recuperar la ronda.");
+      else if (!reply.ok) setError(reasonLabel(reply.error));
+    });
   }
 
   function routeAction(action: "reveal" | "open") {
@@ -209,14 +229,34 @@ export function Lobby() {
     socket.timeout(5000).emit("medical:treat", input, (err, reply) => done(err ? null : reply));
   }
 
+  function sabotage(input: MedicalSabotageInput, done: (reply: MedicalSabotageReply | null) => void) {
+    const socket = socketRef.current; const owner = credential.current?.participantId;
+    if (!socket?.connected || !authenticated || !owner) { done(null); return; }
+    socket.timeout(5000).emit("medical:sabotage", input, (err, reply) => {
+      if (credential.current?.participantId !== owner || !socket.connected) return;
+      if (err) { done(null); return; }
+      if (reply.ok) {
+        if (reply.requestId !== input.requestId || reply.state.gameId !== input.gameId || reply.state.participantId !== owner) { done(null); return; }
+        setPrivateSabotage(reply.state);
+      }
+      done(reply);
+    });
+  }
+
   const count = room?.participants.filter((participant) => participant.connected).length ?? 0;
+  const sendChat = (input: ChatInput) => new Promise<ChatReply | null>(resolve => {
+    const socket = socketRef.current;
+    if (!socket?.connected || !authenticated) { resolve(null); return; }
+    socket.timeout(5000).emit('chat:send', input, (err, reply) => resolve(err ? null : reply));
+  });
+  const chatPanel = room && authenticated ? <TeamChat view={chat} participantId={credential.current?.participantId ?? ''} connected={connected} onSend={sendChat} /> : null;
   const creator = room?.creatorId === credential.current?.participantId;
-  if (room?.status === "started" && authenticated) return <GameScreen state={game} participantId={credential.current?.participantId ?? ""}
-    connected={connected} busy={busy || votingBusy} error={error} actions={{ onVote: cast, onRoute: routeAction,
+  if (room?.status === "started" && authenticated) return <div className="room-with-chat"><div className="room-content"><GameScreen state={game} participantId={credential.current?.participantId ?? ""}
+    privateSabotage={privateSabotage} personalDeath={personalDeath} connected={connected} busy={busy || votingBusy} error={error} actions={{ onVote: cast, onRoute: routeAction, onIntermediate: intermediateAction,
       onOpenThree: () => roundThreeAction("open"), onOpenFour: () => roundFourAction("open"), onRetryFour: id => roundFourAction("retry", id),
-      onAdvance: () => { if (supplies?.round === 3) roundFourAction("advance"); else if (supplies?.round === 2) roundThreeAction("advance"); else advance(); },
-      onOpenTransport: openTransport, onRetry: retryRoute, onGive: givePack, onTreat: treat }} />;
-  return <>
+      onAdvance: () => { if (scene.round === 5) roundFourAction("advance"); else if (scene.round === 4) intermediateAction(5, "advance"); else if (scene.round === 3) intermediateAction(4, "advance"); else if (scene.round === 2) roundThreeAction("advance"); else advance(); },
+      onOpenTransport: openTransport, onRetry: retryRoute, onGive: givePack, onTreat: treat, onSabotage: sabotage }} /></div>{chatPanel}</div>;
+  return <div className={chatPanel ? 'room-with-chat' : ''}><div className="room-content">
     <GameHeader state={game} connected={connected} />
     <section className="panel lobby-panel" aria-label="Sala multijugador">
       <p className="eyebrow">SIMULACIÓN COOPERATIVA</p><h2>{hasSession && !authenticated ? "Recuperar partida" : room ? "El equipo se está reuniendo" : "Preparaos para sobrevivir"}</h2>
@@ -232,14 +272,14 @@ export function Lobby() {
         <button disabled={!connected || busy} onClick={() => socketRef.current?.disconnect().connect()}>Reintentar reconexión</button>
         <button className="secondary" disabled={busy} onClick={() => {
           try { sessionStorage.removeItem(storageKey); } catch { /* La credencial puede no estar almacenada. */ }
-          credential.current = null; setHasSession(false); dispatch({ type: "clear" }); setError(""); socketRef.current?.disconnect().connect();
+          credential.current = null; setPrivateSabotage(null); setPersonalDeath(null); setHasSession(false); dispatch({ type: "clear" }); setError(""); socketRef.current?.disconnect().connect();
         }}>Olvidar credencial local</button>
       </div>}
-      {room?.status === "waiting" && <><div className="section-heading"><h3>Tu equipo</h3><span className="badge">{count}/4 conectados</span></div>
+      {room?.status === "waiting" && <><GameIntroduction /><div className="section-heading"><h3>Tu equipo</h3><span className="badge">{count}/4 conectados</span></div>
         <div className="waiting-grid">{Array.from({ length: 4 }, (_, i) => { const p = room.participants[i]; return <div className="player-card" key={p?.id ?? `empty-${i}`}><strong>{p?.name ?? "Esperando compañero"}</strong><p className="muted">{p ? `${p.id === room.creatorId ? "Anfitrión" : "Participante"} / ${p.connected ? "Conectado" : "Desconectado"}` : "Plaza disponible"}</p></div>; })}</div>
         {creator ? <button disabled={!connected || !authenticated || busy || count !== 4} onClick={start}>Iniciar partida</button> : <p className="muted">El anfitrión iniciará cuando estén los cuatro.</p>}
       </>}
     </section>
     <footer className="app-footer">Everest V3 / Las salas se conservan hasta reiniciar el servidor.</footer>
-  </>;
+  </div>{chatPanel}</div>;
 }

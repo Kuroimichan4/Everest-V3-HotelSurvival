@@ -22,7 +22,13 @@ export interface SharedInventory {
   readonly medicalUnits: number;
 }
 
-export interface SimulationState<Round extends 1 | 2 | 3 | 4 = 1 | 2 | 3 | 4> {
+export interface SimulationState<Round extends 1 | 2 | 3 | 4 | 5 | 6 = 1 | 2 | 3 | 4 | 5 | 6> {
+  readonly medicalSabotage?: import("./medical-sabotage.js").MedicalSabotage;
+  readonly suddenMedicalDeaths?: readonly {characterId:string;round:SimulationState["currentRound"];message:string}[];
+  readonly transportIncidents?: readonly import("./transport-crisis.js").TransportIncident[];
+  readonly sectorEvacuations?: readonly import("./transport-crisis.js").SectorEvacuation[];
+  readonly intermediateConsequences?: readonly import("./intermediate-rounds.js").IntermediateNoAgreement[];
+  readonly intermediateRounds?: readonly import("./intermediate-rounds.js").IntermediateRecord[];
   readonly routeRevelations?: readonly RouteRevelation[];
   readonly sharedItems?: readonly IndividualItem[];
   readonly roundOnePreparation?: { readonly decisionId: string; readonly result: import("@everest/shared").RescueOutcome };
@@ -30,7 +36,7 @@ export interface SimulationState<Round extends 1 | 2 | 3 | 4 = 1 | 2 | 3 | 4> {
   readonly tools: { readonly crowbar: "available" | "lost" };
   readonly roundThreeRoute?: import("./round-three-routes.js").RoundThreeRouteResolution;
   readonly medicalTreatments?: readonly {
-    readonly round: Round extends 4 ? 1 | 2 | 3 | 4 : Round;
+    readonly round: 1 | 2 | 3 | 4 | 5 | 6;
     readonly characterId: string;
     readonly healthRestored: number;
   }[];
@@ -54,8 +60,8 @@ export interface SimulationState<Round extends 1 | 2 | 3 | 4 = 1 | 2 | 3 | 4> {
   readonly inventory: SharedInventory;
 }
 
-/** Núcleo reutilizable por rondas internas todavía no conectadas al multijugador. */
-export type EngineState = SimulationState<1 | 2 | 3 | 4>;
+/** Núcleo reutilizable de las seis rondas de simulación. */
+export type EngineState = SimulationState<1 | 2 | 3 | 4 | 5 | 6>;
 
 /** Los identificadores son internos y únicos dentro de cada partida. */
 export function createInitialState(): SimulationState {

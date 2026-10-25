@@ -14,7 +14,7 @@ export function FinalResults({ result, objective, participantId, connected }: {
       <span className={`connection-badge ${connected ? "online" : "offline"}`}>{connected ? "Conectado" : "Sin conexión"}</span></header>
     <section className="panel" aria-label="Desenlace"><p className="eyebrow">RESULTADO DESCRIPTIVO</p>
       <h2>{result.kind === "evacuation-completed" ? "Desplazamiento de evacuación completado" : "No quedan humanos activos para continuar"}</h2>
-      <p>Sin puntuaciones, clasificación ni evaluación definitiva de objetivos.</p>
+      <p>Sin puntuaciones ni clasificación. Los objetivos individuales se evalúan según los hechos registrados.</p>
       <div className="shared-inventory"><div><strong>{result.counts.evacuated}</strong><span>Humanos evacuados</span></div>
         <div><strong>{result.counts.dead}</strong><span>Fallecidos</span></div><div><strong>{result.counts.abandoned}</strong><span>Abandonados</span></div>
         <div><strong>{result.counts.rescuedNpcs}</strong><span>NPC con rescate completado</span></div></div>
@@ -30,7 +30,7 @@ export function FinalResults({ result, objective, participantId, connected }: {
       <p>Evacuaciones NPC confirmadas: {result.counts.evacuatedNpcs}. El recuento de rescates conserva los hechos históricos.</p>
     </section>
     <section className="panel" aria-label="Última decisión"><h2>Última decisión y consecuencias</h2>
-      {result.lastMovement ? <><p>Ruta final: {result.lastMovement.routeName}.</p><p>Accidente: {result.lastMovement.accident ? "sí" : "no"}.
+      {result.lastMovement ? <><p>Última ruta recorrida: {result.lastMovement.routeName}.</p><p>Accidente: {result.lastMovement.accident ? "sí" : "no"}.
         {result.lastMovement.victimIds.length > 0 ? ` Humanos afectados: ${names(result.lastMovement.victimIds)}.` : ""}</p></>
         : <p>El desplazamiento final no llegó a completarse.</p>}
       <p>Recursos restantes: {result.inventory.packs} packs y {result.inventory.medicalUnits} unidades médicas. Palanca: {result.crowbar === "lost" ? "perdida" : "disponible"}.</p>

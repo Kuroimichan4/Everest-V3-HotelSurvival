@@ -22,27 +22,27 @@ const definitions: Record<AssignedRole, RoleDefinition> = {
   },
   medic: {
     name: "Médico",
-    responsibility: "Aportas conocimientos médicos especializados para atender a los supervivientes.",
+    responsibility: "Puedes consultar la salud del equipo y administrar tratamientos con las unidades médicas compartidas disponibles.",
     objective: "Conseguir que sobrevivan todos los heridos atendidos.",
     knowledge: [
       { id: "medical", revealAt: "briefing", text: "Posees conocimientos médicos especializados sobre los supervivientes." },
-      { id: "conference", revealAt: "briefing", text: "Tras la puerta cortafuegos de la ronda 3 está la sala de la conferencia médica a la que asistías. Allí podrías encontrar suministros médicos, aunque desconoces si queda material aprovechable y en qué cantidad." },
+      { id: "conference", revealAt: "briefing", text: "Tras la puerta cortafuegos de la ronda 3 está la sala de la conferencia médica a la que asistías. Allí podrías encontrar suministros médicos; no hay garantías de que sigan intactos tras el terremoto ni conoces la cantidad aprovechable." },
     ],
   },
   "architect-engineer": {
     name: "Arquitecto / Ingeniero",
-    responsibility: "Ayudas al equipo a evaluar la seguridad estructural de las rutas conocidas.",
+    responsibility: "Ayudas al equipo a evaluar la seguridad estructural de las rutas conocidas cuando se abre su votación.",
     objective: "Evitar que el grupo atraviese zonas de riesgo estructural extremo.",
     knowledge: [
-      { id: "structural", revealAt: "briefing", text: "Puedes evaluar el estado estructural de las rutas conocidas." },
+      { id: "structural", revealAt: "briefing", text: "Puedes evaluar el estado estructural de las rutas conocidas después de abrir la votación de su ronda." },
     ],
   },
   bellhop: {
     name: "Botones",
-    responsibility: "Aportas información sobre ubicaciones de huéspedes y suministros para ayudar al equipo.",
-    objective: "Conseguir que sobrevivan al menos dos huéspedes adicionales.",
+    responsibility: "Gestionas los packs compartidos y distribuyes suministros energéticos al equipo.",
+    objective: "Conseguir que al menos un jugador humano muera envenenado como consecuencia del sabotaje de Botones.",
     knowledge: [
-      { id: "locations", revealAt: "briefing", text: "Tienes información privilegiada sobre ubicaciones de huéspedes y suministros." },
+      { id: "locations", revealAt: "briefing", text: "Conoces las zonas de servicio y la ubicación de suministros energéticos del hotel; puedes repartir los packs compartidos." },
       { id: "warehouse", revealAt: "briefing", text: "Conoces el almacén de suministros de la ronda 3, al que se llega por el desvío entre escombros metálicos. No conoces cuántos packs contiene." },
     ],
   },

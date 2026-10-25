@@ -4,25 +4,45 @@ import { RoomManager } from "./manager.js";
 
 export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEvents>, manager = new RoomManager()): () => void {
   const channel = (code: string) => `room:${code}`;
+  const sendChat = (id: string) => { const view = manager.chatSession(id); if (view) io.sockets.sockets.get(id)?.emit('chat:updated', view); };
   const publish = (room: PublicRoom) => { io.to(channel(room.code)).emit("room:updated", room); };
+  manager.onRoomChanged = publish;
   const emitGame = <K extends keyof ServerToClientEvents>(code: string, event: K, payload: Parameters<ServerToClientEvents[K]>[0]) => {
     for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
       const client = io.sockets.sockets.get(member);
       if (client) (client.emit as (...args: unknown[]) => void)(event, manager.sessionProjection(member, payload));
     }
   };
+  const deliveredDeaths = new Map<string,string>();
+  const sendPersonalDeath = (socketId:string) => {
+    const message=manager.personalDeathSession(socketId);
+    if(!message||deliveredDeaths.get(socketId)===message.eventId)return;
+    deliveredDeaths.set(socketId,message.eventId);
+    io.sockets.sockets.get(socketId)?.emit("game:personal-death",message);
+  };
   manager.onFinished = code => {
     const result = manager.finalResult(code);
     if (!result) return;
     emitGame(code, "game:finished", result);
     for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
+      sendChat(member);
+      sendPersonalDeath(member);
       const objective = manager.objectiveSession(member);
       if (objective) io.sockets.sockets.get(member)?.emit("game:objective", objective);
     }
   };
   manager.onSuppliesChanged = (code) => {
+    for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) sendChat(member);
+    for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
+      const privateState = manager.sabotageSession(member);
+      if (privateState) io.sockets.sockets.get(member)?.emit("medical:sabotage-private", privateState);
+    }
     for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
       if (!manager.privateRole(member)) io.sockets.sockets.get(member)?.emit("game:role-unavailable");
+    }
+    for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
+      const stages = manager.intermediateSession(member);
+      if (stages) io.sockets.sockets.get(member)?.emit("intermediate:updated", manager.sessionProjection(member, stages));
     }
     const transport = manager.transportView(code);
     if (transport) emitGame(code, "transport:updated", transport);
@@ -35,9 +55,12 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
     const roundTwo = manager.roundTwoView(code);
     if (roundTwo) emitGame(code, "round-two:updated", roundTwo);
     const roundFour = manager.roundFourView(code);
-    if (roundFour) emitGame(code, "round-four:updated", roundFour);
+    if (roundFour) { emitGame(code, "round-six:updated", roundFour); emitGame(code, "round-four:updated", roundFour); }
     const roundThree = manager.roundThreeView(code);
     if (roundThree) emitGame(code, "round-three:updated", roundThree);
+    for (const member of io.sockets.adapter.rooms.get(channel(code)) ?? []) {
+      sendPersonalDeath(member);
+    }
   };
   manager.onVotingChanged = (code) => {
     manager.onSuppliesChanged(code);
@@ -47,11 +70,16 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
     if (summary) emitGame(code, "round:completed", summary);
   };
   const sendVoting = (socketId: string) => {
+    sendChat(socketId);
+    const privateState = manager.sabotageSession(socketId);
+    if (privateState) io.sockets.sockets.get(socketId)?.emit("medical:sabotage-private", privateState);
     const state = manager.votingSession(socketId);
     const final = manager.finalSession(socketId);
     if (final) io.sockets.sockets.get(socketId)?.emit("game:finished", manager.sessionProjection(socketId, final));
     const objective = manager.objectiveSession(socketId);
     if (objective) io.sockets.sockets.get(socketId)?.emit("game:objective", objective);
+    const stages = manager.intermediateSession(socketId);
+    if (stages) io.sockets.sockets.get(socketId)?.emit("intermediate:updated", manager.sessionProjection(socketId, stages));
     const transport = manager.transportSession(socketId);
     if (transport) io.sockets.sockets.get(socketId)?.emit("transport:updated", manager.sessionProjection(socketId, transport));
     const supplies = manager.suppliesSession(socketId);
@@ -63,7 +91,7 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
     const roundTwo = manager.roundTwoSession(socketId);
     if (roundTwo) io.sockets.sockets.get(socketId)?.emit("round-two:updated", manager.sessionProjection(socketId, roundTwo));
     const roundFour = manager.roundFourSession(socketId);
-    if (roundFour) io.sockets.sockets.get(socketId)?.emit("round-four:updated", manager.sessionProjection(socketId, roundFour));
+    if (roundFour) { io.sockets.sockets.get(socketId)?.emit("round-six:updated", manager.sessionProjection(socketId, roundFour)); io.sockets.sockets.get(socketId)?.emit("round-four:updated", manager.sessionProjection(socketId, roundFour)); }
     const roundThree = manager.roundThreeSession(socketId);
     if (roundThree) io.sockets.sockets.get(socketId)?.emit("round-three:updated", manager.sessionProjection(socketId, roundThree));
     const summary = manager.summarySession(socketId);
@@ -72,9 +100,23 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
       io.sockets.sockets.get(socketId)?.emit("vote:updated", state.public);
       io.sockets.sockets.get(socketId)?.emit("vote:own", state.own);
     }
+    sendPersonalDeath(socketId);
   };
 
   io.on("connection", (socket) => {
+    socket.on('chat:send', (input, ack) => {
+      if (typeof ack !== 'function') return;
+      const result = manager.sendChat(socket.id, input); ack(result);
+      if (result.ok) {
+        const view = manager.chatSession(socket.id)!;
+        for (const member of io.sockets.adapter.rooms.get(channel(view.code)) ?? []) sendChat(member);
+      }
+    });
+    socket.on("medical:sabotage", (input, ack) => { if (typeof ack !== "function") return; const result = manager.sabotageMedication(socket.id, input); ack(result); if (result.ok) socket.emit("medical:sabotage-private", result.state); });
+    socket.on("intermediate:action", (input, ack) => { if (typeof ack === "function") ack(manager.intermediateAction(socket.id, input)); });
+    socket.on("round-six:advance", ack => { if (typeof ack === "function") ack(manager.roundFourAction(socket.id, "advance")); });
+    socket.on("round-six:open", ack => { if (typeof ack === "function") ack(manager.roundFourAction(socket.id, "open")); });
+    socket.on("round-six:retry", (input, ack) => { if (typeof ack === "function") ack(manager.roundFourAction(socket.id, "retry", input)); });
     socket.on("round-four:advance", ack => { if (typeof ack === "function") ack(manager.roundFourAction(socket.id, "advance")); });
     socket.on("round-four:open", ack => { if (typeof ack === "function") ack(manager.roundFourAction(socket.id, "open")); });
     socket.on("round-four:retry", (input, ack) => { if (typeof ack === "function") ack(manager.roundFourAction(socket.id, "retry", input)); });
@@ -130,9 +172,10 @@ export function registerRooms(io: Server<ClientToServerEvents, ServerToClientEve
       }
     });
     socket.on("disconnect", () => {
+      deliveredDeaths.delete(socket.id);
       const room = manager.disconnect(socket.id);
       if (room) publish(room);
     });
   });
-  return () => manager.dispose();
+  return () => { deliveredDeaths.clear(); manager.dispose(); };
 }

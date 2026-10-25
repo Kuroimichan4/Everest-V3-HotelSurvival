@@ -1,0 +1,19 @@
+import {createElement} from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {readFileSync,mkdirSync,writeFileSync} from 'node:fs';
+import {expect,test} from 'vitest';
+import {RoomManager} from '../../server/src/rooms/manager';
+import {GameScreen,type GameActions} from './GameScreen';
+import {emptyGame,type GameState} from './game-state';
+function fixture(){
+ const manager=new RoomManager(()=>0,{now:()=>1000,schedule:()=>()=>{}},()=>.99);const first=manager.create('s0','Host');if(!first.ok)throw new Error(first.error);const code=first.value.room.code;const sessions=[first.value];for(let i=1;i<4;i++){const r=manager.join('s'+i,'Person '+i,code);if(!r.ok)throw new Error(r.error);sessions.push(r.value);}const started=manager.start('s0');if(!started.ok)throw new Error(started.error);const v=manager.publicVote(code)!;for(const i of [0,1,2])manager.vote('s'+i,{decisionId:v.decisionId,attemptId:v.attemptId,optionId:'abandon'});manager.advanceRound('s0');
+ const state=(i:number):GameState=>({...emptyGame,room:started.value,role:manager.privateRole('s'+i),supplies:manager.sessionProjection('s'+i,manager.suppliesView(code)!),roundTwo:manager.sessionProjection('s'+i,manager.roundTwoView(code)!),vote:manager.publicVote(code)});
+ const actions:GameActions={onVote:()=>{},onRoute:()=>{},onOpenThree:()=>{},onAdvance:()=>{},onOpenTransport:()=>{},onRetry:()=>{},onGive:()=>{},onTreat:()=>{}};const render=(i:number)=>renderToStaticMarkup(createElement(GameScreen,{state:state(i),participantId:sessions[i]!.credential.participantId,connected:true,busy:false,error:'',actions}));
+ return {manager,code,state,render};
+}
+test('all roles prepare with names, descriptions and costs but no hidden structural report labels',()=>{const f=fixture();try{for(let i=0;i<4;i++){const html=f.render(i);expect(html).not.toContain('aria-label="Informe estructural"');expect(html).toContain('Pasillo principal');expect(html).toContain('40 energía');expect(html.includes('data-structural-pending')).toBe(i===1);if(i!==3)expect(html).not.toContain('Conductos de ventilación');}}finally{f.manager.dispose();}});
+test('revealed ventilation still has no risk before opening; architect alone receives a highlighted report during voting',()=>{const f=fixture();try{f.manager.routeAction('s3','reveal');expect(f.render(1)).not.toContain('aria-label="Informe estructural"');f.manager.routeAction('s0','open');for(let i=0;i<4;i++){const html=f.render(i);expect(html.match(/aria-label="Informe estructural"/g)??[]).toHaveLength(i===1?3:0);expect(html).not.toMatch(/20 %|35 %|55 %|70 %|accidentProbability/);if(i===1){for(const label of ['BAJO','MODERADO','ALTO'])expect(html).toContain(label);expect(html).not.toContain('data-structural-pending');}}}finally{f.manager.dispose();}});
+test('fixtures from actual session projections compare preparation, opening and another role without duplicate panels',()=>{
+ const f=fixture();try{const dir=new URL('../../../.cache/10c2/',import.meta.url);mkdirSync(dir,{recursive:true});const css=readFileSync(new URL('./styles.css',import.meta.url),'utf8');const write=(name:string,html:string)=>writeFileSync(new URL(name+'.html',dir),'<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>'+css+'</style></head><body><main class="shell">'+html+'</main></body></html>');f.manager.routeAction('s3','reveal');write('architect-preparation',f.render(1));f.manager.routeAction('s0','open');write('architect-voting',f.render(1));write('medic-voting',f.render(0));expect(f.render(1).match(/data-panel="action"/g)).toHaveLength(1);
+ }finally{f.manager.dispose();}
+});

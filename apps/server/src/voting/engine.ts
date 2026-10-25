@@ -85,3 +85,18 @@ export function openNextAttempt(state: Decision, attemptId: string, now: number,
   if (!validTime(now) || now < previous.deadline || !Number.isSafeInteger(now + duration)) return reject(state, "invalid-time");
   return accept({ ...state, status: "open", attempts: [...state.attempts, attempt(attemptId, electorate ?? previous.electorate, now, duration)] });
 }
+
+/** Actualización autoritativa por fallecimiento: conserva intento, votos vivos y plazo. */
+export function reconcileElectorate(state:Decision,electorate:readonly Voter[],now:number,allowedOptionIds?:readonly string[]):VotingOperation {
+ const current=state.attempts.at(-1)!;
+ if(state.status!=='open'||current.status!=='open')return accept(state);
+ if(!validElectorate(electorate))return reject(state,'invalid-electorate');
+ if(!validTime(now)||now<current.openedAt)return reject(state,'invalid-time');
+ if(now>=current.deadline)return checkDeadline(state,current.id,now);
+ const votes=current.votes.filter(v=>electorate.some(p=>p.participantId===v.participantId&&p.alive)&&(!allowedOptionIds||allowedOptionIds.includes(v.optionId)));
+ const requiredVotes=requiredMajority(electorate.filter(v=>v.alive).length);
+ const next={...current,electorate:electorate.map(p=>({...p})),votes,requiredVotes};
+ const approved=state.options.find(o=>votes.filter(v=>v.optionId===o.id).length>=requiredVotes);
+ if(approved){const result={kind:'approved' as const,optionId:approved.id};return accept({...replaceLast(state,{...next,status:'closed',closedAt:now,result}),status:'closed',result});}
+ return accept(replaceLast(state,next));
+}

@@ -3,7 +3,7 @@ import { RoomVoting, type VotingClock } from "./voting.js";
 import { newId } from "./identity.js";
 import { isAlive } from "../simulation/state.js";
 import { decideRoundFourNpc, failRoundFourNpcVote, failRoundFourExitVote, roundFourNpcOptions,
-  roundFourRouteAvailability, type NpcChoice, type RoundFourState } from "../simulation/round-four.js";
+  ROUND_FOUR_ROUTES, roundFourRouteAvailability, type NpcChoice, type RoundFourState } from "../simulation/round-four.js";
 
 /** Coordinación de decisiones; las consecuencias pertenecen exclusivamente al motor 9A. */
 export class RoundFourStage {
@@ -34,7 +34,7 @@ export class RoundFourStage {
         else this.record(decideRoundFourNpc(this.read(), voting.publicView().decisionId, outcome as NpcChoice));
       }
       this.changed();
-    }, 4, options.map(o => ({ id: o.id, label: o.label })), undefined, id => {
+    }, 6, options.map(o => ({ id: o.id, label: o.label })), undefined, id => {
       this.record(failRoundFourNpcVote(this.read(), id, 1));
       return this.electorate();
     });
@@ -58,7 +58,7 @@ export class RoundFourStage {
         }
       }
       this.changed();
-    }, 4, options.map(o => ({ id: o.id, label: o.name })), undefined, id => {
+    }, 6, options.map(o => ({ id: o.id, label: o.name })), undefined, id => {
       this.record(failRoundFourExitVote(this.read(), id, 1));
       this.options = roundFourRouteAvailability(this.read());
       if (!this.electorate().some(p => p.alive)) this.blocked = "no-living-characters";
@@ -95,12 +95,12 @@ export class RoundFourStage {
     const options = roundFourNpcOptions(state); const choice = options.find(o => o.id === npc.decision?.choice);
     const publicId = (id: string) => this.people.find(p => p.characterId === id)!.participantId;
     const result = round.exit;
-    return { round: 4, preparationId: this.preparationId,
+    return { round: 6, preparationId: this.preparationId,
       phase: result ? "completed" : npc.status === "awaiting-decision" ? "npc-voting"
         : transport ? "transport" : this.blocked ? "blocked" : this.exitVoting?.publicView().status === "open" ? "exit-voting" : "preparation",
       npc: { encounter: npc.encounter, status: npc.status, choice: npc.decision?.choice ?? null, message: npc.message ?? null,
         energyPerHuman: choice?.energyPerHuman ?? 0, medicalUnits: choice?.medicalUnits ?? 0, options, vote: this.npcVoting?.publicView() ?? null },
-      options: structuredClone(this.selection || !this.exitVoting ? roundFourRouteAvailability(state) : this.options!),
+      options: structuredClone(this.selection || !this.exitVoting ? roundFourRouteAvailability(state) : this.options!).map(o => ({ ...o, danger: ROUND_FOUR_ROUTES[o.id].danger })),
       vote: this.exitVoting?.publicView() ?? null, selection: this.selection ? { ...this.selection } : null,
       forced: round.forcedRoute !== null, surcharge: round.energySurcharge, blocked: this.blocked,
       collapse: round.collapse ? { damage: round.collapse.damage, affectedIds: round.collapse.affectedIds.map(publicId), deceasedIds: round.collapse.deceasedIds.map(publicId) } : null,

@@ -2,26 +2,29 @@ import { TRANSPORT_ENERGY_PER_PERSON } from "./energy-costs.js";
 import { abandonCharacters } from "./abandonment.js";
 import type { RouteAvailability } from "@everest/shared";
 import { spendEnergy, type OperationError } from "./operations.js";
-import { isAlive, type EngineState } from "./state.js";
+import { isAlive, type HumanCharacter, type HumanRole, type EngineState } from "./state.js";
 
+export type MovementCost = number | { base: number; extraByRole: Partial<Record<HumanRole, number>> };
+export const baseMovementCost = (cost: MovementCost) => typeof cost === "number" ? cost : cost.base;
+export const movementEnergyFor = (human: HumanCharacter, cost: MovementCost) => baseMovementCost(cost) + (typeof cost === "number" ? 0 : cost.extraByRole[human.role] ?? 0);
 export interface TransportPlan {
   readonly carrierIds: readonly string[];
   readonly transportedIds: readonly string[];
 }
 
 /** Alternativa hipotética: validar no confirma ningún abandono ni pago. */
-export function assessTransportAlternative(state: EngineState, routeCost: number, transportedIds: readonly string[]) {
+export function assessTransportAlternative(state: EngineState, routeCost: MovementCost, transportedIds: readonly string[]) {
   const classified = classifyMovement(state, routeCost);
   const exhausted = classified.ok ? classified.classification.transportRequiredIds : [];
   const budget = carrierEnergyCost(routeCost, transportedIds.length);
   const carrierCost = budget.ok ? budget.energyCost : Infinity;
   const plan: TransportPlan = { transportedIds: [...transportedIds], carrierIds: transportedIds.length
-    ? state.characters.filter(c => isAlive(c) && !exhausted.includes(c.id) && c.energy >= carrierCost).map(c => c.id) : [] };
+    ? state.characters.filter(c => isAlive(c) && !exhausted.includes(c.id) && c.energy >= carrierCost + movementEnergyFor(c, routeCost) - baseMovementCost(routeCost)).map(c => c.id) : [] };
   const prospective = abandonCharacters(state, exhausted.filter(id => !transportedIds.includes(id))).state;
   return { plan, carrierCost, viable: classified.ok && budget.ok && assessTransportPlan(prospective, routeCost, plan).ok };
 }
 
-export function routeEnergyAvailability(state: EngineState, routeCost: number): RouteAvailability {
+export function routeEnergyAvailability(state: EngineState, routeCost: MovementCost): RouteAvailability {
   const classified = classifyMovement(state, routeCost);
   if (!classified.ok) return { status: "unavailable", reason: classified.error };
   const { walkingIds, transportRequiredIds: exhausted } = classified.classification;
@@ -44,24 +47,24 @@ export interface MovementCharge {
 }
 type ClassificationResult = { ok: true; classification: MovementClassification } | { ok: false; error: OperationError };
 
-export function carrierEnergyCost(routeCost: number, transportedCount: number):
+export function carrierEnergyCost(routeCost: MovementCost, transportedCount: number):
   { ok: true; energyCost: number } | { ok: false; error: OperationError } {
-  if (!Number.isFinite(routeCost) || routeCost < 0 || !Number.isSafeInteger(transportedCount) || transportedCount < 0
-    || !Number.isFinite(routeCost + TRANSPORT_ENERGY_PER_PERSON * transportedCount)) return { ok: false, error: "invalid-amount" };
-  return { ok: true, energyCost: routeCost + TRANSPORT_ENERGY_PER_PERSON * transportedCount };
+  if (!Number.isFinite(baseMovementCost(routeCost)) || baseMovementCost(routeCost) < 0 || !Number.isSafeInteger(transportedCount) || transportedCount < 0
+    || !Number.isFinite(baseMovementCost(routeCost) + TRANSPORT_ENERGY_PER_PERSON * transportedCount)) return { ok: false, error: "invalid-amount" };
+  return { ok: true, energyCost: baseMovementCost(routeCost) + TRANSPORT_ENERGY_PER_PERSON * transportedCount };
 }
 
 /** Cálculo puro: estar agotado no elimina ni mata a nadie. */
-export function classifyMovement(state: EngineState, routeCost: number): ClassificationResult {
-  if (!Number.isFinite(routeCost) || routeCost < 0) return { ok: false, error: "invalid-amount" };
+export function classifyMovement(state: EngineState, routeCost: MovementCost): ClassificationResult {
+  if (!Number.isFinite(baseMovementCost(routeCost)) || baseMovementCost(routeCost) < 0) return { ok: false, error: "invalid-amount" };
   return { ok: true, classification: {
-    walkingIds: state.characters.filter(c => isAlive(c) && c.energy >= routeCost).map(c => c.id),
-    transportRequiredIds: state.characters.filter(c => isAlive(c) && c.energy < routeCost).map(c => c.id),
+    walkingIds: state.characters.filter(c => isAlive(c) && c.energy >= movementEnergyFor(c, routeCost)).map(c => c.id),
+    transportRequiredIds: state.characters.filter(c => isAlive(c) && c.energy < movementEnergyFor(c, routeCost)).map(c => c.id),
     excludedIds: state.characters.filter(c => !isAlive(c)).map(c => c.id),
   } };
 }
 
-export function assessTransportPlan(state: EngineState, routeCost: number, plan?: TransportPlan):
+export function assessTransportPlan(state: EngineState, routeCost: MovementCost, plan?: TransportPlan):
   { ok: true; classification: MovementClassification; carrierCost: number; charges: readonly MovementCharge[] }
   | { ok: false; error: OperationError; classification?: MovementClassification; carrierCost?: number; charges?: readonly MovementCharge[] } {
   const classified = classifyMovement(state, routeCost);
@@ -85,13 +88,13 @@ export function assessTransportPlan(state: EngineState, routeCost: number, plan?
   const carrierCost = budget.energyCost;
   const charges: MovementCharge[] = state.characters.filter(isAlive).map(c => ({ characterId: c.id,
     kind: carried.has(c.id) ? "transported" : carriers.has(c.id) ? "carrier" : "walking",
-    energyCost: carried.has(c.id) ? 0 : carriers.has(c.id) ? carrierCost : routeCost }));
+    energyCost: carried.has(c.id) ? 0 : carriers.has(c.id) ? carrierCost + movementEnergyFor(c, routeCost) - baseMovementCost(routeCost) : movementEnergyFor(c, routeCost) }));
   if (charges.some(charge => state.characters.find(c => c.id === charge.characterId)!.energy < charge.energyCost)) return { ...reject("transport-plan-infeasible"), carrierCost, charges };
   return { ok: true, classification, carrierCost, charges };
 }
 
 /** Pago provisional reutilizable; un rechazo devuelve el estado original. */
-export function payMovement<S extends EngineState>(state: S, routeCost: number, plan?: TransportPlan):
+export function payMovement<S extends EngineState>(state: S, routeCost: MovementCost, plan?: TransportPlan):
   { ok: true; state: S; charges: readonly MovementCharge[] }
   | { ok: false; state: S; error: OperationError } {
   const assessment = assessTransportPlan(state, routeCost, plan);
