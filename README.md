@@ -17,6 +17,7 @@ apps/web/              Interfaz React y Vite
 apps/server/src/       Servidor, salas, simulación y agente NPC
 packages/shared/       Contratos públicos
 scripts/               Comprobaciones locales
+config/                Política de red compartida por Vite y el servidor
 apps/server/prisma/    Preparación inicial, sin base de datos operativa
 docs/                  Documentos originales conservados
 ```
@@ -73,10 +74,13 @@ No sobrescribir un `.env` que ya contenga configuración privada. La plantilla `
 
 | Variable | Uso / valor inicial |
 |---|---|
-| `HOST` | Servidor local: `127.0.0.1` |
+| `HOST` | Backend siempre en loopback: `127.0.0.1` |
 | `PORT` | Fastify: `3001` |
 | `WEB_ORIGIN` | Frontend de desarrollo: `http://localhost:5173` |
 | `BACKEND_URL` | Destino del proxy Vite: `http://127.0.0.1:3001` |
+| `EVEREST_NETWORK_MODE` | `local` por defecto; `lan` explícitamente |
+| `EVEREST_LAN_HOST` | Vacía por defecto; IPv4 privada obtenida con `ipconfig` |
+| `FRONTEND_PORT` | `5173`; mismo valor en ambas terminales |
 | `SURVIVOR_AI_MODE` | `demo` por defecto; opcionalmente `gemini` |
 | `GEMINI_API_KEY` | Secreto del servidor, vacío en la plantilla |
 | `GEMINI_MODEL` | Modelo configurable: `gemini-3.5-flash-lite` |
@@ -143,9 +147,51 @@ Gemini genera argumentos durante las votaciones de rescate, sujeto a disponibili
 
 F5 recupera la sesión mientras la sala exista en el proceso del servidor. Los personajes eliminados mantienen sus restricciones. No se incluyen aquí los objetivos secretos de los roles.
 
-### Cuatro dispositivos en una red local
+### Cuatro ordenadores en la misma Wi-Fi o LAN
 
-La configuración entregada escucha en **loopback**: Vite usa `localhost` y Fastify `127.0.0.1`. No basta con abrir la IP del ordenador desde otro dispositivo. El acceso LAN requiere revisar interfaces de escucha, origen, proxy y firewall; queda pendiente de una configuración y autorización específicas. No se habilita exposición pública ni se relajan controles en esta entrega.
+El modo predeterminado continúa siendo **local**. El modo LAN es explícito: únicamente Vite escucha en la IPv4 privada seleccionada. Fastify permanece en loopback y recibe HTTP y Socket.IO mediante el proxy. No se utiliza `0.0.0.0`, no se habilitan orígenes comodín ni se configura acceso público.
+
+En el ordenador anfitrión, abrir PowerShell y ejecutar:
+
+```powershell
+ipconfig
+```
+
+Buscar **Dirección IPv4** del adaptador Wi-Fi o Ethernet conectado a la red de los demás participantes. No utilizar la puerta de enlace, una dirección pública ni una interfaz de VPN que no compartan los jugadores. No hay una IP LAN fija en el proyecto: la dirección puede cambiar al cambiar de red o reiniciar el router.
+
+Detener las instancias anteriores con `Ctrl+C`. Desde la raíz, abrir dos terminales y ejecutar lo siguiente en **cada una**. La línea de PATH solo es necesaria con Node portátil.
+
+Terminal del servidor:
+
+```powershell
+$env:Path = "$PWD\.tools\node-v24.22.1-win-x64;$env:Path"
+$env:EVEREST_NETWORK_MODE = 'lan'
+$env:EVEREST_LAN_HOST = Read-Host 'IPv4 LAN del anfitrión obtenida con ipconfig'
+npm.cmd run dev:server
+```
+
+Terminal del frontend:
+
+```powershell
+$env:Path = "$PWD\.tools\node-v24.22.1-win-x64;$env:Path"
+$env:EVEREST_NETWORK_MODE = 'lan'
+$env:EVEREST_LAN_HOST = Read-Host 'La misma IPv4 LAN del anfitrión'
+npm.cmd run dev:web
+```
+
+Los cuatro jugadores, incluido el anfitrión, deben abrir **`http://<IPv4-LAN-del-anfitrión>:5173`**, sustituyendo el marcador por la dirección obtenida. No deben abrir `localhost` en los equipos remotos: apuntaría a su propio ordenador. En modo LAN Vite se vincula únicamente a la IP indicada; para usar la URL `localhost` se vuelve al modo local. Un equipo crea la sala y comparte su código; los demás se unen desde sus navegadores. Los perfiles, credenciales y permisos funcionan igual que en el modo local.
+
+La configuración privada debe conservar `HOST=127.0.0.1`, `PORT=3001` y `BACKEND_URL=http://127.0.0.1:3001`. `WEB_ORIGIN` puede conservar su valor local habitual; el modo LAN añade exclusivamente el origen exacto de la IP y puerto seleccionados. `FRONTEND_PORT` permite cambiar el puerto si fuera necesario; en ese caso ajustar también `WEB_ORIGIN` y usar ese mismo puerto en la URL. No utilizar `--host` sin dirección ni agregar comodines para resolver un error.
+
+Para comprobar sin llamadas a Gemini, añadir `$env:SURVIVOR_AI_MODE = 'demo'` antes del comando del servidor. El modo LAN no modifica el modo de IA: Gemini continúa siendo opcional y sus credenciales permanecen en el servidor.
+
+**Si Windows solicita permiso de firewall:** comprobar que se trata de Node/Vite del proyecto y autorizar únicamente **Redes privadas**, cuando sea una red de confianza. No seleccionar redes públicas ni desactivar el firewall. Si ya existe un bloqueo, revisar manualmente «Firewall de Windows Defender → Permitir una aplicación»; si hace falta una regla específica, limitar la entrada a Vite/TCP en el puerto del frontend, perfil privado y subred local. No hace falta exponer el puerto 3001 del backend. Si el equipo está administrado, pedir ayuda al responsable de la red. El proyecto no modifica reglas automáticamente.
+
+Si otro ordenador no conecta, comprobar IP y puerto, que ambos equipos estén en la misma red, que Vite siga abierto y que no se esté usando una Wi-Fi de invitados con aislamiento de clientes. Probar `http://<IPv4-LAN-del-anfitrión>:5173/api/health`. No abrir puertos del router, activar UPnP, crear túneles ni publicar el servidor como solución.
+
+**Volver a localhost:** detener ambos procesos. En ambas terminales establecer `$env:EVEREST_NETWORK_MODE = 'local'` y eliminar la variable de proceso con `Remove-Item Env:EVEREST_LAN_HOST -ErrorAction SilentlyContinue`. Volver a ejecutar los mismos comandos `dev:server` y `dev:web`; abrir http://localhost:5173. Si se guardaron ajustes LAN en `.env`, restablecer allí el modo local para las terminales futuras.
+
+LAN significa acceso por una interfaz privada dentro de una red de confianza; no es un despliegue por Internet. La aplicación no crea reglas de firewall, redirecciones del router ni servicios públicos. No se debe reenviar el puerto de Vite desde Internet. La vista previa compilada sigue siendo local; este modo LAN está preparado para el flujo de desarrollo indicado.
 
 ## Comprobaciones y compilación
 
@@ -164,6 +210,8 @@ git diff --check
 
 Con ambos servicios de desarrollo encendidos se puede ejecutar `npm.cmd run smoke` en otra terminal para verificar HTTP, proxy y Socket.IO. Si se pretende una comprobación sin proveedor, arrancar primero el servidor en demo.
 
+Con una interfaz LAN privada disponible, después de `npm.cmd run build`, `node scripts/smoke-lan.mjs` comprueba automáticamente los modos local y LAN en puertos temporales, cuatro clientes, roles, chat, voto, reconexión y rechazo de orígenes ajenos. Utiliza demo, no llama a Gemini, no modifica el firewall y cierra sus servicios al terminar. Esta prueba desde el anfitrión no sustituye la comprobación desde otro ordenador.
+
 Para comprobar los compilados localmente después de `build`, en dos terminales:
 
 ```powershell
@@ -174,7 +222,7 @@ npm.cmd run start:server
 npm.cmd run preview:web
 ```
 
-La vista previa está en http://localhost:4173. Ajustar `WEB_ORIGIN=http://localhost:4173` para esa sesión del servidor y del comando smoke si se utiliza. Es una vista previa local; no constituye una configuración de despliegue público.
+La vista previa está en http://localhost:4173. Ajustar `WEB_ORIGIN=http://localhost:4173` para esa sesión del servidor y del comando smoke si se utiliza. Es una vista previa local; utilizar `EVEREST_NETWORK_MODE=local`. No constituye una configuración de despliegue público.
 
 ## Base de datos y archivos generados
 
@@ -186,4 +234,4 @@ Para entregar o clonar se necesitan el código fuente, manifiestos de los worksp
 
 `.gitignore` excluye `.env` y sus copias; únicamente `.env.example` se permite como plantilla versionada y debe conservar las claves vacías. Ignorar un archivo no elimina una clave de commits anteriores. Si una clave llegó a versionarse, revocarla en Google AI Studio y reemplazarla en el entorno privado; no basta con borrar su línea de la versión actual. No publicar configuraciones completas en logs o mensajes de error.
 
-La plantilla mantiene la clave vacía; la aplicación no activa Gemini automáticamente ni configura acceso público o persistencia. Una distribución portátil de Node, los servicios externos y sus cuotas no forman parte del repositorio.
+La plantilla mantiene la clave vacía; la aplicación no activa Gemini automáticamente ni configura acceso público o persistencia. El acceso LAN requiere el modo explícito descrito arriba. Una distribución portátil de Node, los servicios externos y sus cuotas no forman parte del repositorio.

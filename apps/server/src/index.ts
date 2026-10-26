@@ -5,7 +5,7 @@ import { createSurvivorAdapter } from './rooms/survivor-gemini.js';
 
 const config = readServerConfig();
 const roomManager = new RoomManager(undefined, undefined, undefined, undefined, undefined, () => createSurvivorAdapter(config.survivor));
-const app = buildApp({ logger: true, webOrigin: config.webOrigin, roomManager });
+const app = buildApp({ logger: true, webOrigins: config.webOrigins, roomManager });
 let stopping = false;
 
 async function stop() {
